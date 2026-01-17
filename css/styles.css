@@ -1,0 +1,104 @@
+:root {
+  --bg: #f5f7fb;
+  --card: #ffffff;
+  --text: #222;
+  --muted: #6b7280;
+  --primary: #4f46e5;
+  --danger: #ef4444;
+  --border: #e5e7eb;
+  --shadow: 0 6px 20px rgba(0,0,0,0.06);
+  --radius: 16px;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+.topbar {
+  backdrop-filter: saturate(180%) blur(10px);
+  background: rgba(255,255,255,0.7);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  padding: 24px 16px 24px 20px;
+  position: relative;
+}
+
+.logo {
+  height: 56px;
+  width: auto;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.status { margin-left: auto; color: var(--text); }
+
+.controls {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  background: #fff;
+}
+.row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 220px; }
+.field label { font-size: 12px; color: var(--muted); }
+.field input, .field select {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: #fff;
+  width: 100%;
+}
+
+.port-row { display: flex; gap: 8px; }
+#outputPath { flex: 1; }
+
+button {
+  border: none; border-radius: 12px; padding: 10px 14px; cursor: pointer;
+  box-shadow: var(--shadow); background: #fff;
+}
+button.primary { background: var(--primary); color: #fff; }
+button.danger { background: var(--danger); color: #fff; }
+button.ghost { background: #fff; }
+
+.spacer { flex: 1; }
+
+.plots {
+  padding: 16px 20px 24px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  display: flex; flex-direction: column;
+}
+.card-head {
+  display: flex; align-items: center; padding: 12px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.card-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+
+.device-info {
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: #1e1e1e;
+  color: #9ee493;
+  font-size: 0.9em;
+}
+
+.plot { width: 100%; height: 480px; }
+@media (max-width: 1100px) {
+  .plots { grid-template-columns: 1fr; }
+}
