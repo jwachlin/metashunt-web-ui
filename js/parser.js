@@ -77,16 +77,44 @@ export class MetaShuntParser {
     }
   }
 
-  _emitPacket(payload) {
+_emitPacket(payload) {
     const dv = new DataView(payload.buffer);
     const t_ticks = dv.getUint32(0, true);
     const current_mA = dv.getFloat32(4, true);
 
-    if (this.t0 === null) this.t0 = t_ticks;
+    if (this.t0 === null) {
+        this.t0 = t_ticks;
+        this.lastValidSec = -1; // Initialize tracking for monotonic time
+    }
 
     const relSec = ((t_ticks - this.t0) / 4) / 1e6;
     const current_uA = current_mA * 1000.0;
 
+    // --- VALIDATION GATE ---
+    // 1. Enforce monotonic time (drop backward jumps)
+    if (relSec <= this.lastValidSec)
+    {
+      console.error('Time not increasing');
+      return;
+    }
+
+    // 2. Time change between datapoint should be small
+    if((relSec - this.lastValidSec) > 0.1 && this.lastValidSec > 0.0)
+    {
+      console.error('Time increase too large');
+      return;
+    }
+
+    // 3. Physical Limits (MetaShunt range: slightly below zero to slightly >2.2A)
+    if (current_uA > 2200000 || current_uA < -5000)
+    {
+      console.error('Measurements not reasonable');
+      return;
+    }
+
+    this.lastValidSec = relSec;
+    
+    // Valid point, send it out
     this.onMeasurement({ t: relSec, current_uA });
   }
 }

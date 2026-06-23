@@ -164,12 +164,13 @@ export class MetaShuntSerial {
       this.worker = new Worker('./js/worker.js', { type: 'module' });
 
       this.worker.onmessage = e => {
-        if (e.data?.type === 'measurement') {
-          this.onDataCb(e.data.data);
+        if (e.data?.type === 'batch') {
+          const batch = e.data.data;
+          this.onDataCb(batch); // Pass the whole batch to app.js
           
-          // Handle Burst Auto-Stop
+          // Handle Burst Auto-Stop using the length of the batch arrays
           if (this.mode === 'burst') {
-            this.receivedBurst++;
+            this.receivedBurst += batch.x.length;
             if (this.receivedBurst >= this.expectedBurstSamples) {
               this.onStatusCb(`Burst complete (${this.receivedBurst} samples)`);
               this.stop();
@@ -185,7 +186,10 @@ export class MetaShuntSerial {
 
       this.worker.postMessage({ type: 'init' });
     } else {
-      this.parser = new MetaShuntParser(d => this.onDataCb(d));
+      // Fallback for non-worker mode (wraps single points into a batch of 1)
+      this.parser = new MetaShuntParser(d => {
+         this.onDataCb({ x: [d.t], y: [d.current_uA], q: [0] /* Quick shim */ });
+      });
     }
   }
 

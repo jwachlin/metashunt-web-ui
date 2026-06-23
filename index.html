@@ -62,8 +62,15 @@
       <div class="spacer"></div>
       <button id="loadCsvBtn" class="ghost">Import Log</button>
       <button id="clearCsvBtn" class="ghost">Clear Imported Log</button>
+      <button id="plotMemoryBtn" class="ghost">View Entire Dataset</button>
       <button id="exportCsvBtn" class="ghost">Export as CSV</button>
       <button id="exportImgsBtn" class="ghost">Export PNGs</button>
+    </div>
+    <div id="csvOffsetControl" style="display:none; align-items:center; gap:8px;">
+      <label for="csvOffset">CSV offset (s):</label>
+      <button id="csvOffsetDown">−</button>
+      <input type="number" id="csvOffset" value="0" step="0.1" style="width:80px">
+      <button id="csvOffsetUp">+</button>
     </div>
   </section>
 

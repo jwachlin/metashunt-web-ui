@@ -5,11 +5,15 @@ import { MetaShuntSerial } from './webSerial.js';
 const statusEl = document.getElementById('status');
 const deviceInfoEl = document.getElementById('deviceInfo');
 
-
 const loadCsvBtn = document.getElementById('loadCsvBtn');
 const clearCsvBtn = document.getElementById('clearCsvBtn');
 const exportCsvBtn = document.getElementById('exportCsvBtn');
 const exportImgsBtn = document.getElementById('exportImgsBtn');
+const plotMemoryBtn = document.getElementById('plotMemoryBtn');
+const csvOffsetInput   = document.getElementById('csvOffset');
+const csvOffsetControl = document.getElementById('csvOffsetControl');
+const csvOffsetUp      = document.getElementById('csvOffsetUp');
+const csvOffsetDown    = document.getElementById('csvOffsetDown');  
 
 /* -------------------- DEVICE -------------------- */
 
@@ -21,23 +25,29 @@ device.onStatus(setStatus);
 /* -------------------- DATA -------------------- */
 
 let curRows = [];
-let curX = [], curY = [];
-let qX = [], qY = [];
-let lastT = null;
-let qAccum_uAh = 0;
+
+// Dedicated visual buffers for the sliding window
+let liveX = [], liveY = [];
+let liveQX = [], liveQY = [];
 
 let csvRows = [];
 let csvX = [], csvY = [];
 let csvQX = [], csvQY = [];
 let csvLoaded = false;
+let csvTimeOffset = 0;
 
 const FLUSH_MS = 50;
 
-let pendingX = [];
-let pendingY = [];
-let pendingQX = [];
-let pendingQY = [];
 let needsUpdate = false;
+let isViewingMemory = false; // Lock to prevent live data from overwriting memory plots
+
+function shiftedCsvX()  { return csvX.map(x => x + csvTimeOffset); }
+function shiftedCsvQX() { return csvQX.map(x => x + csvTimeOffset); }
+
+function replotCsv() {
+  Plotly.restyle('plot-current', { x: [shiftedCsvX()], y: [csvY],  visible: true }, [1]);
+  Plotly.restyle('plot-charge',  { x: [shiftedCsvQX()], y: [csvQY], visible: true }, [1]);
+}
 
 /* -------------------- PLOTS -------------------- */
 
@@ -52,7 +62,20 @@ document.addEventListener('DOMContentLoaded', () => {
   const startBtn = document.getElementById('startBtn');
   const stopBtn = document.getElementById('stopBtn');
 
-  const liveTrace = { x: curX, y: curY, mode: 'lines', name: 'Live Current' };
+  function applyOffset(delta) {
+    csvTimeOffset = parseFloat(csvOffsetInput.value) + delta;
+    csvOffsetInput.value = csvTimeOffset.toFixed(1);
+    replotCsv();
+  }
+
+  csvOffsetInput.addEventListener('change', () => {
+    csvTimeOffset = parseFloat(csvOffsetInput.value) || 0;
+    replotCsv();
+  });
+  csvOffsetUp.addEventListener('click',   () => applyOffset(+parseFloat(csvOffsetInput.step)));
+  csvOffsetDown.addEventListener('click', () => applyOffset(-parseFloat(csvOffsetInput.step)));
+
+  const liveTrace = { x: liveX, y: liveY, mode: 'lines', name: 'Live Current' };
   const csvTrace  = { x: csvX, y: csvY, mode: 'lines', name: 'Log Current', visible: false };
 
   Plotly.newPlot('plot-current', [liveTrace, csvTrace],
@@ -60,7 +83,7 @@ document.addEventListener('DOMContentLoaded', () => {
     { displaylogo: false }
   );
 
-  const liveCharge = { x: qX, y: qY, mode: 'lines', name: 'Live Charge' };
+  const liveCharge = { x: liveQX, y: liveQY, mode: 'lines', name: 'Live Charge' };
   const csvCharge  = { x: csvQX, y: csvQY, mode: 'lines', name: 'Log Charge', visible: false };
 
   Plotly.newPlot('plot-charge', [liveCharge, csvCharge],
@@ -71,13 +94,12 @@ document.addEventListener('DOMContentLoaded', () => {
   /* -------------------- START / STOP -------------------- */
 
   startBtn.addEventListener('click', async () => {
-    resetData();
     try {
+      resetData();
       if (!device.port) {
         await device.connect();
       }
 
-      // Now these variables are guaranteed not to be null
       const opts = {
         mode: modeSel.value,
         burstHz: parseInt(burstHz.value),
@@ -90,11 +112,6 @@ document.addEventListener('DOMContentLoaded', () => {
       setStatus('Running...');
     } catch (err) {
       console.error(err);
-      console.warn(modeSel.value)
-      console.warn(parseInt(burstHz.value))
-      console.warn(triggerSel.value)
-      console.warn(parseFloat(triggerUA.value))
-      console.warn(parseInt(stageIndex.value))
       setStatus(`Error: ${err.message}`);
     }
   });
@@ -124,55 +141,91 @@ document.addEventListener('DOMContentLoaded', () => {
 /* -------------------- PLOT FLUSH -------------------- */
 
 setInterval(() => {
-  if (!needsUpdate) return;
-
-  Plotly.extendTraces('plot-current',
-    { x: [pendingX], y: [pendingY] },
-    [0]
-  );
-
-  Plotly.extendTraces('plot-charge',
-    { x: [pendingQX], y: [pendingQY] },
-    [0]
-  );
-
-  pendingX.length = 0;
-  pendingY.length = 0;
-  pendingQX.length = 0;
-  pendingQY.length = 0;
+  if (!needsUpdate || liveX.length === 0 || isViewingMemory) return;
   needsUpdate = false;
+
+  const latestT = liveX[liveX.length - 1];
+  const windowSizeS = 10;
+  
+  const cutoffT = Math.max(0, latestT - windowSizeS);
+  let dropIdx = 0;
+  while (dropIdx < liveX.length && liveX[dropIdx] < cutoffT) dropIdx++;
+  
+  if (dropIdx > 0) {
+    liveX.splice(0, dropIdx);
+    liveY.splice(0, dropIdx);
+    liveQX.splice(0, dropIdx);
+    liveQY.splice(0, dropIdx);
+  }
+
+  const layoutUpdate = {
+    margin: { t: 16 },
+    xaxis: { title: 'Time (s)', range: [cutoffT, latestT], autorange: false },
+    yaxis: { title: 'Current (µA)', autorange: true }
+  };
+
+
+  Plotly.react('plot-current', [
+    { x: [...liveX], y: [...liveY], mode: 'lines', name: 'Live Current' },
+    { x: shiftedCsvX(), y: csvY, mode: 'lines', name: 'Log Current', visible: csvLoaded }
+  ], layoutUpdate);
+
+  Plotly.react('plot-charge', [
+    { x: [...liveQX], y: [...liveQY], mode: 'lines', name: 'Live Charge' },
+    { x: shiftedCsvQX(), y: csvQY, mode: 'lines', name: 'Log Charge', visible: csvLoaded }
+  ], {
+    ...layoutUpdate,
+    yaxis: { title: 'Charge (µAh)', autorange: true }
+  });
+
 }, FLUSH_MS);
 
 /* -------------------- MEASUREMENT -------------------- */
 
-function handleMeasurement(d) {
-  const { t, current_uA } = d;
-  curRows.push(d);
-
-  if (lastT !== null) {
-    const dt = t - lastT;
-    qAccum_uAh += current_uA * dt / 3600.0;
+function handleMeasurement(batch) {
+  // 1. Infinite memory storage for CSV exports and Memory plotting
+  for (let i = 0; i < batch.x.length; i++) {
+    curRows.push({ t: batch.x[i], current_uA: batch.y[i] });
   }
-  lastT = t;
 
-  pendingX.push(t);
-  pendingY.push(current_uA);
-  pendingQX.push(t);
-  pendingQY.push(qAccum_uAh);
+  // 2. Feed the high-speed rendering buffer
+  liveX.push(...batch.x);
+  liveY.push(...batch.y);
+  liveQX.push(...batch.x);
+  liveQY.push(...batch.q);
+  
   needsUpdate = true;
 }
 
 function resetData() {
   curRows = [];
-  curX.length = curY.length = 0;
-  qX.length = qY.length = 0;
-  pendingX.length = pendingY.length = 0;
-  pendingQX.length = pendingQY.length = 0;
-  lastT = null;
-  qAccum_uAh = 0;
+  liveX.length = liveY.length = 0;
+  liveQX.length = liveQY.length = 0;
+  
+  isViewingMemory = false; // Release memory lock
+  needsUpdate = false;
 
-  Plotly.restyle('plot-current', { x: [curX], y: [curY] }, [0]);
-  Plotly.restyle('plot-charge', { x: [qX], y: [qY] }, [0]);
+  const layoutResetCurrent = {
+    margin: { t: 16 },
+    xaxis: { title: 'Time (s)', autorange: true },
+    yaxis: { title: 'Current (µA)', autorange: true }
+  };
+
+  const layoutResetCharge = {
+    margin: { t: 16 },
+    xaxis: { title: 'Time (s)', autorange: true },
+    yaxis: { title: 'Charge (µAh)', autorange: true }
+  };
+
+  Plotly.react('plot-current', [
+     { x: [], y: [], mode: 'lines', name: 'Live Current' },
+     { x: shiftedCsvX(), y: csvY, mode: 'lines', name: 'Log Current', visible: csvLoaded ? true : false }
+  ], layoutResetCurrent);
+
+  Plotly.react('plot-charge', [
+     { x: [], y: [], mode: 'lines', name: 'Live Charge' },
+     { x: shiftedCsvQX(), y: csvQY, mode: 'lines', name: 'Log Charge', visible: csvLoaded ? true : false }
+  ], layoutResetCharge);
 }
 
 /* -------------------- CSV -------------------- */
@@ -195,6 +248,8 @@ clearCsvBtn.addEventListener('click', () => {
   csvX.length = csvY.length = 0;
   csvQX.length = csvQY.length = 0;
   csvLoaded = false;
+  csvTimeOffset = 0;
+  csvOffsetControl.style.display = 'none';   // hide when cleared
   Plotly.restyle('plot-current', { visible: false }, [1]);
   Plotly.restyle('plot-charge', { visible: false }, [1]);
 });
@@ -224,9 +279,11 @@ function parseCsvData(csvContent) {
     csvQY.push(q);
   }
 
+  csvTimeOffset = 0;                          // reset offset on new file
+  csvOffsetInput.value = '0';
+  csvOffsetControl.style.display = 'flex';    // show the control
   csvLoaded = true;
-  Plotly.restyle('plot-current', { x: [csvX], y: [csvY], visible: true }, [1]);
-  Plotly.restyle('plot-charge', { x: [csvQX], y: [csvQY], visible: true }, [1]);
+  replotCsv();
 }
 
 /* -------------------- EXPORT -------------------- */
@@ -265,3 +322,49 @@ function setStatus(s) {
     deviceInfoEl.textContent = 'Not connected';
   }
 }
+
+/* -------------------- LOAD FROM MEMORY -------------------- */
+
+plotMemoryBtn.addEventListener('click', () => {
+  if (!curRows.length) return alert('No data in memory');
+
+  // Engage lock to stop the 10-second flush loop from overwriting this view
+  isViewingMemory = true; 
+
+  const fullX = curRows.map(r => r.t);
+  const fullY = curRows.map(r => r.current_uA);
+
+  const fullQX = [];
+  const fullQY = [];
+  let q = 0;
+  let last = null;
+
+  for (let i = 0; i < curRows.length; i++) {
+    const r = curRows[i];
+    if (last !== null) {
+      q += r.current_uA * (r.t - last) / 3600.0;
+    }
+    last = r.t;
+    fullQX.push(r.t);
+    fullQY.push(q);
+  }
+
+  // Atomic render of the full memory history
+  Plotly.react('plot-current', [
+    { x: fullX, y: fullY, mode: 'lines', name: 'Live Current' },
+    { x: shiftedCsvX(), y: csvY, mode: 'lines', name: 'Log Current', visible: csvLoaded ? true : false }
+  ], { 
+    margin: { t: 16 },
+    xaxis: { title: 'Time (s)', autorange: true }, 
+    yaxis: { title: 'Current (µA)', autorange: true } 
+  });
+
+  Plotly.react('plot-charge', [
+    { x: fullQX, y: fullQY, mode: 'lines', name: 'Live Charge' },
+    { x: shiftedCsvQX(), y: csvQY, mode: 'lines', name: 'Log Charge', visible: csvLoaded ? true : false }
+  ], { 
+    margin: { t: 16 },
+    xaxis: { title: 'Time (s)', autorange: true }, 
+    yaxis: { title: 'Charge (µAh)', autorange: true } 
+  });
+});
