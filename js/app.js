@@ -3,6 +3,7 @@ import { MetaShuntSerial } from './webSerial.js';
 /* -------------------- DOM -------------------- */
 
 const statusEl = document.getElementById('status');
+const statusTextEl = document.getElementById('statusText');
 const deviceInfoEl = document.getElementById('deviceInfo');
 
 const loadCsvBtn = document.getElementById('loadCsvBtn');
@@ -60,6 +61,36 @@ const stCharge= document.getElementById('stCharge');
 const stBatt  = document.getElementById('stBatt');
 const stViol  = document.getElementById('stViol');
 const regionStatsEl = document.getElementById('regionStats');
+
+// Plotly theme colors, derived from the CSS theme so charts follow toggles.
+function theme() {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  return {
+    dark,
+    paper: dark ? '#171a21' : '#ffffff',
+    plot: dark ? '#171a21' : '#ffffff',
+    grid: dark ? '#2a2e38' : '#eef1f6',
+    text: dark ? '#e5e7eb' : '#222',
+    muted: dark ? '#9ca3af' : '#6b7280'
+  };
+}
+
+function themedLayout(base) {
+  const t = theme();
+  return {
+    ...base,
+    paper_bgcolor: t.paper,
+    plot_bgcolor: t.plot,
+    font: { color: t.text },
+    xaxis: { ...base.xaxis, gridcolor: t.grid, zerolinecolor: t.grid, linecolor: t.grid, tickfont: { color: t.muted } },
+    yaxis: { ...base.yaxis, gridcolor: t.grid, zerolinecolor: t.grid, linecolor: t.grid, tickfont: { color: t.muted } }
+  };
+}
+
+// Manual labels: point annotations + named regions
+let notes = [];            // { id, t, y, text, color }
+let regionLabel = '';      // shown on the region, if set
+let lastClickT = null;     // cursor x from last click on the current plot
 
 /* -------------------- HELPERS -------------------- */
 
@@ -174,16 +205,166 @@ function cqData(ys, bins = 64) {
   return { levels, prob };
 }
 
-function updateCq() {
-  if (isViewingMemory) return;
-  const cq = cqData(liveY);
+function renderCq() {
+  const ys = currentAnalysisY();
+  const cq = cqData(ys);
   Plotly.react('plot-cq', [{
     x: cq.levels, y: cq.prob, mode: 'lines', fill: 'tozeroy', name: 'Occupancy'
-  }], {
+  }],
+  themedLayout({
     margin: { t: 16 },
     xaxis: { title: 'Current (µA)' },
     yaxis: { title: 'Time above level (%)', range: [0, 100], autorange: false }
-  });
+  }));
+}
+
+/* -------------------- HISTOGRAM -------------------- */
+
+function histData(ys, bins = 64) {
+  if (!ys || !ys.length) return { edges: [], counts: [] };
+  let lo = Infinity, hi = -Infinity;
+  const n = ys.length;
+  for (let i = 0; i < n; i++) {
+    const v = ys[i];
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  let span = hi - lo || 1;
+  if (span <= 0) span = 1;
+  const hist = new Float64Array(bins);
+  for (let i = 0; i < n; i++) {
+    let b = Math.floor((ys[i] - lo) / span * bins);
+    if (b < 0) b = 0; else if (b >= bins) b = bins - 1;
+    hist[b]++;
+  }
+  const edges = new Array(bins + 1), counts = new Array(bins);
+  for (let b = 0; b <= bins; b++) edges[b] = lo + span * b / bins;
+  for (let b = 0; b < bins; b++) counts[b] = hist[b];
+  return { edges, counts };
+}
+
+function renderHistogram() {
+  const ys = currentAnalysisY();
+  const h = histData(ys);
+  Plotly.react('plot-hist', [{
+    x: h.edges, y: h.counts, type: 'bar',
+    marker: { color: 'rgba(79,70,229,0.5)', line: { color: '#4f46e5', width: 1 } },
+    name: 'Current distribution'
+  }], themedLayout({
+    margin: { t: 16 },
+    xaxis: { title: 'Current (µA)' },
+    yaxis: { title: 'Samples' }
+  }));
+}
+
+/* -------------------- FFT (periodogram) -------------------- */
+
+// Iterative in-place radix-2 FFT over real signal. Returns bins up to Nyquist.
+function fftSpectrum(xs) {
+  const n0 = xs.length;
+  if (n0 < 4) return { freq: [], mag: [] };
+  // Pad to next power of two
+  const n = 1 << Math.ceil(Math.log2(n0));
+  const re = new Float64Array(n);
+  const im = new Float64Array(n);
+  re.set(xs);
+
+  // Bit-reversal permutation
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      const trash = re[i]; re[i] = re[j]; re[j] = trash;
+    }
+  }
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = -2 * Math.PI / len;
+    const wRe = Math.cos(ang), wIm = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let curRe = 1, curIm = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const a = i + k, b = i + k + len / 2;
+        const tRe = curRe * re[b] - curIm * im[b];
+        const tIm = curRe * im[b] + curIm * re[b];
+        re[b] = re[a] - tRe; im[b] = im[a] - tIm;
+        re[a] = re[a] + tRe; im[a] = im[a] + tIm;
+        const nRe = curRe * wRe - curIm * wIm;
+        curIm = curRe * wIm + curIm * wRe;
+        curRe = nRe;
+      }
+    }
+  }
+  // Single-sided magnitude spectrum (bins 0 .. Nyquist)
+  const half = n / 2 + 1;
+  const freq = new Array(half), mag = new Array(half);
+  for (let k = 0; k < half; k++) {
+    freq[k] = k;
+    mag[k] = Math.sqrt(re[k] * re[k] + im[k] * im[k]) / n0;
+  }
+  // Drop the DC bin and normalize frequency by sample spacing below
+  return { freq, mag };
+}
+
+function renderFft() {
+  const src = currentAnalysisSource();
+  const n = src.x.length;
+  if (n < 8) return;
+  const fs = fsPerSample(src.x);     // sampling rate estimate
+  if (!fs) return;
+  const { freq: binFreq, mag } = fftSpectrum(Float64Array.from(src.y));
+  const freqs = binFreq.map(k => k * (fs / (1 << Math.ceil(Math.log2(n)))));
+  const Hz = freqs.slice(1);         // drop DC
+  const M = mag.slice(1);
+  Plotly.react('plot-fft', [{
+    x: Hz, y: M, mode: 'lines', name: 'Spectrum'
+  }], themedLayout({
+    margin: { t: 16 },
+    xaxis: { title: 'Frequency (Hz)' },
+    yaxis: { title: 'Mag (µA)', type: 'log' }
+  }));
+}
+
+// Estimate sampling rate from the mean inter-sample time.
+function fsPerSample(xs) {
+  if (xs.length < 2) return 0;
+  let sum = 0, c = 0;
+  for (let i = 1; i < xs.length; i++) {
+    const dt = xs[i] - xs[i - 1];
+    if (dt > 0) { sum += dt; c++; }
+  }
+  if (!c) return 0;
+  const avgDt = sum / c;
+  return avgDt > 0 ? 1 / avgDt : 0;
+}
+
+/* -------------------- ANALYSIS DATA SOURCE -------------------- */
+
+// Provides {x, y} for the analysis charts. Uses the full retained history
+// when viewing memory, otherwise the live window.
+function currentAnalysisSource() {
+  if (isViewingMemory && curRows.length) {
+    const x = new Array(curRows.length), y = new Array(curRows.length);
+    for (let i = 0; i < curRows.length; i++) {
+      x[i] = curRows[i].t;
+      y[i] = curRows[i].current_uA;
+    }
+    return { x, y };
+  }
+  return { x: liveX, y: liveY };
+}
+
+function currentAnalysisY() {
+  if (isViewingMemory && curRows.length) {
+    return curRows.map(r => r.current_uA);
+  }
+  return liveY;
+}
+
+function renderAnalysisPlots() {
+  renderCq();
+  renderHistogram();
+  renderFft();
 }
 
 function renderLiveStats() {
@@ -229,17 +410,52 @@ function currentShapes(plotId) {
   }
   // Region cursors (current plot only)
   if (plotId === 'plot-current' && regionActive) {
-    for (const x of regionBounds) {
-      if (x === null) continue;
-      shapes.push({
-        type: 'line', yref: 'paper', y0: 0, y1: 1, xref: 'x',
-        x0: x, x1: x, editable: true,
-        line: { dash: 'dot', color: '#0ea5e9', width: 1 },
-        name: 'region-cursor'
-      });
+    const [lo, hi] = regionBounds;
+    if (lo !== null) {
+      if (hi !== null && hi > lo) {
+        shapes.push({
+          type: 'rect', yref: 'paper', y0: 0, y1: 1, xref: 'x',
+          x0: lo, x1: hi,
+          fillcolor: 'rgba(14,165,233,0.08)', line: { width: 0 }
+        });
+      }
+      for (const x of [lo, hi]) {
+        if (x === null) continue;
+        shapes.push({
+          type: 'line', yref: 'paper', y0: 0, y1: 1, xref: 'x',
+          x0: x, x1: x, editable: true,
+          line: { dash: 'dot', color: '#0ea5e9', width: 1 },
+          name: 'region-cursor'
+        });
+      }
     }
   }
   return shapes;
+}
+
+function currentAnnotations() {
+  const ann = [];
+  // Manual point labels
+  for (const n of notes) {
+    ann.push({
+      x: n.t, y: n.y, text: n.text, showarrow: true, arrowhead: 2,
+      ax: 20, ay: -30, xref: 'x', yref: 'y',
+      font: { color: n.color || '#0f172a', size: 12 }
+    });
+  }
+  // Named region caption
+  if (regionActive && regionLabel) {
+    const [lo, hi] = regionBounds;
+    if (lo !== null && hi !== null && hi > lo) {
+      ann.push({
+        text: regionLabel, xref: 'x', x: (lo + hi) / 2,
+        yref: 'paper', y: 1.05, showarrow: false,
+        xanchor: 'center', yanchor: 'bottom',
+        font: { color: '#0ea5e9', size: 14, weight: 600 }
+      });
+    }
+  }
+  return ann;
 }
 
 function readRegionFromShapes() {
@@ -308,16 +524,16 @@ function renderWindow() {
   Plotly.react('plot-current', [
     { x: [...liveX], y: [...liveY], mode: 'lines', name: 'Live Current' },
     { x: shiftedCsvX(), y: csvY, mode: 'lines', name: 'Log Current', visible: csvLoaded }
-  ], { ...layoutUpdate, shapes: currentShapes('plot-current') });
+  ], themedLayout({ ...layoutUpdate, shapes: currentShapes('plot-current'), annotations: currentAnnotations() }));
 
   Plotly.react('plot-charge', [
     { x: [...liveQX], y: [...liveQY], mode: 'lines', name: 'Live Charge' },
     { x: shiftedCsvQX(), y: csvQY, mode: 'lines', name: 'Log Charge', visible: csvLoaded }
-  ], {
+  ], themedLayout({
     ...layoutUpdate,
     yaxis: { title: 'Charge (µAh)', autorange: true },
     shapes: currentShapes('plot-charge')
-  });
+  }));
 }
 
 function resetPlots() {
@@ -335,12 +551,17 @@ function resetPlots() {
   Plotly.react('plot-current', [
     { x: [], y: [], mode: 'lines', name: 'Live Current' },
     { x: shiftedCsvX(), y: csvY, mode: 'lines', name: 'Log Current', visible: csvLoaded }
-  ], { ...layoutResetCurrent, shapes: currentShapes('plot-current') });
+  ], themedLayout({ ...layoutResetCurrent, shapes: currentShapes('plot-current'), annotations: currentAnnotations() }));
 
   Plotly.react('plot-charge', [
     { x: [], y: [], mode: 'lines', name: 'Live Charge' },
     { x: shiftedCsvQX(), y: csvQY, mode: 'lines', name: 'Log Charge', visible: csvLoaded }
-  ], { ...layoutResetCharge, shapes: currentShapes('plot-charge') });
+  ], themedLayout({ ...layoutResetCharge, shapes: currentShapes('plot-charge') }));
+
+  Plotly.react('plot-hist', [{ x: [], y: [], type: 'bar' }],
+    themedLayout({ margin: { t: 16 }, xaxis: { title: 'Current (µA)' }, yaxis: { title: 'Samples' } }));
+  Plotly.react('plot-fft', [{ x: [], y: [], mode: 'lines', name: 'Spectrum' }],
+    themedLayout({ margin: { t: 16 }, xaxis: { title: 'Frequency (Hz)' }, yaxis: { title: 'Mag (µA)', type: 'log' } }));
 }
 
 function renderMemory() {
@@ -363,12 +584,14 @@ function renderMemory() {
   Plotly.react('plot-current', [
     { x: cur.x, y: cur.y, mode: 'lines', name: 'Live Current' },
     { x: shiftedCsvX(), y: csvY, mode: 'lines', name: 'Log Current', visible: csvLoaded }
-  ], { ...layoutCurrent, shapes: currentShapes('plot-current') });
+  ], themedLayout({ ...layoutCurrent, shapes: currentShapes('plot-current'), annotations: currentAnnotations() }));
 
   Plotly.react('plot-charge', [
     { x: chr.x, y: chr.y, mode: 'lines', name: 'Live Charge' },
     { x: shiftedCsvQX(), y: csvQY, mode: 'lines', name: 'Log Charge', visible: csvLoaded }
-  ], { ...layoutCharge, shapes: currentShapes('plot-charge') });
+  ], themedLayout({ ...layoutCharge, shapes: currentShapes('plot-charge') }));
+
+  renderAnalysisPlots();
 }
 
 /* -------------------- FLUSH LOOP -------------------- */
@@ -379,7 +602,9 @@ setInterval(() => {
   needsUpdate = false;
   renderWindow();
   renderLiveStats();
-  if (tick % 5 === 0) updateCq();
+  if (tick % 5 === 0) renderCq();
+  if (tick % 5 === 0) renderHistogram();
+  if (tick % 20 === 0) renderFft();
 }, FLUSH_MS);
 
 /* -------------------- MEASUREMENT -------------------- */
@@ -505,14 +730,28 @@ function download(blobOrUrl, name) {
 /* -------------------- STATUS -------------------- */
 
 function setStatus(s) {
-  statusEl.textContent = s;
+  statusTextEl.textContent = s;
+  statusEl.classList.remove('ready', 'connecting', 'running', 'error');
 
   if (s.startsWith('Connected')) {
     deviceInfoEl.textContent = 'MetaShunt V2 connected';
   }
 
+  if (s.startsWith('Running')) {
+    statusEl.classList.add('running');
+  } else if (s.startsWith('Burst complete')) {
+    statusEl.classList.add('connecting');
+  } else if (s.startsWith('Connected') || s.startsWith('Found') || s.startsWith('Burst requested') || s.startsWith('Continuous')) {
+    statusEl.classList.add('connecting');
+  } else if (s.startsWith('Error')) {
+    statusEl.classList.add('error');
+  } else {
+    statusEl.classList.add('ready');
+  }
+
   if (s === 'Stopped') {
     deviceInfoEl.textContent = 'Not connected';
+    statusEl.classList.add('ready');
   }
 }
 
@@ -530,6 +769,35 @@ document.addEventListener('DOMContentLoaded', () => {
   const stopBtn = document.getElementById('stopBtn');
 
   burstHz.min = 500; // hardware is 500 Hz-quantized
+
+  /* -------------------- THEME TOGGLE -------------------- */
+
+  const themeToggle = document.getElementById('themeToggle');
+  const applyTheme = (dark) => {
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+    themeToggle.textContent = dark ? 'Light' : 'Dark';
+    try { localStorage.setItem('metashunt-theme', dark ? 'dark' : 'light'); } catch (e) {}
+    // Re-render charts so Plotly follows the theme colors.
+    if (isViewingMemory && curRows.length) renderMemory();
+    else if (liveX.length) { needsUpdate = false; renderWindow(); }
+    renderCq(); renderHistogram(); renderFft();
+  };
+  themeToggle.addEventListener('click', () => {
+    const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    applyTheme(!dark);
+  });
+  let savedTheme = null;
+  try { savedTheme = localStorage.getItem('metashunt-theme'); } catch (e) {}
+  applyTheme(savedTheme === 'dark');
+
+  /* -------------------- LABELS COLLAPSE -------------------- */
+
+  const labelsPanel = document.getElementById('labelsPanel');
+  const collapseLabelsBtn = document.getElementById('collapseLabelsBtn');
+  collapseLabelsBtn.addEventListener('click', () => {
+    const open = labelsPanel.classList.toggle('open');
+    collapseLabelsBtn.textContent = open ? 'Labels ▴' : 'Labels ▾';
+  });
 
   let uiRunning = false;
 
@@ -559,25 +827,42 @@ document.addEventListener('DOMContentLoaded', () => {
   const csvTrace  = { x: [], y: [], mode: 'lines', name: 'Log Current', visible: false };
 
   Plotly.newPlot('plot-current', [liveTrace, csvTrace],
-    { margin: { t: 16 }, xaxis: { title: 'Time (s)' }, yaxis: { title: 'Current (µA)' } },
-    { displaylogo: false }
+    themedLayout({ margin: { t: 16 }, xaxis: { title: 'Time (s)' }, yaxis: { title: 'Current (µA)' } }),
+    { displaylogo: false, responsive: true }
   );
 
   const liveCharge = { x: [], y: [], mode: 'lines', name: 'Live Charge' };
   const csvCharge  = { x: [], y: [], mode: 'lines', name: 'Log Charge', visible: false };
 
   Plotly.newPlot('plot-charge', [liveCharge, csvCharge],
-    { margin: { t: 16 }, xaxis: { title: 'Time (s)' }, yaxis: { title: 'Charge (µAh)' } },
-    { displaylogo: false }
+    themedLayout({ margin: { t: 16 }, xaxis: { title: 'Time (s)' }, yaxis: { title: 'Charge (µAh)' } }),
+    { displaylogo: false, responsive: true }
   );
 
   Plotly.newPlot('plot-cq', [{
     x: [], y: [], mode: 'lines', fill: 'tozeroy', name: 'Occupancy'
-  }], {
+  }], themedLayout({
     margin: { t: 16 },
     xaxis: { title: 'Current (µA)' },
     yaxis: { title: 'Time above level (%)', range: [0, 100], autorange: false }
-  }, { displaylogo: false });
+  }), { displaylogo: false, responsive: true });
+
+  Plotly.newPlot('plot-hist', [{
+    x: [], y: [], type: 'bar',
+    marker: { color: 'rgba(79,70,229,0.5)', line: { color: '#4f46e5', width: 1 } }
+  }], themedLayout({
+    margin: { t: 16 },
+    xaxis: { title: 'Current (µA)' },
+    yaxis: { title: 'Samples' }
+  }), { displaylogo: false, responsive: true });
+
+  Plotly.newPlot('plot-fft', [{
+    x: [], y: [], mode: 'lines', name: 'Spectrum'
+  }], themedLayout({
+    margin: { t: 16 },
+    xaxis: { title: 'Frequency (Hz)' },
+    yaxis: { title: 'Mag (µA)', type: 'log' }
+  }), { displaylogo: false, responsive: true });
 
   /* -------------------- START / STOP -------------------- */
 
@@ -657,6 +942,50 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Respond to cursor dragging on the current plot
   document.getElementById('plot-current').on('plotly_relayout', readRegionFromShapes);
+
+  /* -------------------- MANUAL LABELS (8a / 8b) -------------------- */
+
+  const labelText = document.getElementById('labelText');
+  const addLabelBtn = document.getElementById('addLabelBtn');
+  const setRegionLabelBtn = document.getElementById('setRegionLabelBtn');
+  const clearLabelsBtn = document.getElementById('clearLabelsBtn');
+
+  // Capture where the user clicked so "Add Label" can anchor there.
+  document.getElementById('plot-current').on('plotly_click', (e) => {
+    const pt = e.points && e.points[0];
+    if (pt && pt.x !== undefined) lastClickT = pt.x;
+  });
+
+  addLabelBtn.addEventListener('click', () => {
+    const text = labelText.value.trim();
+    if (!text) return alert('Enter label text first');
+    // Anchor at last click, else the visible window center, else 0.
+    let t = lastClickT;
+    if (t === null || t === undefined) {
+      t = liveX.length ? (liveX[liveX.length - 1] + (liveX[0] || 0)) / 2 : 0;
+    }
+    // Use current measurement value at that time as the y anchor.
+    let y = null;
+    if (liveY.length) y = liveY[liveY.length - 1];
+    notes.push({ id: Date.now(), t, y, text, color: '#0f172a' });
+    labelText.value = '';
+    refreshPlots();
+  });
+
+  setRegionLabelBtn.addEventListener('click', () => {
+    const text = labelText.value.trim();
+    if (!regionActive) return alert('Enable Region Cursors first');
+    if (!text) return alert('Enter a label first');
+    regionLabel = text;
+    labelText.value = '';
+    refreshPlots();
+  });
+
+  clearLabelsBtn.addEventListener('click', () => {
+    notes = [];
+    regionLabel = '';
+    refreshPlots();
+  });
 
   /* -------------------- MEMORY VIEW -------------------- */
 

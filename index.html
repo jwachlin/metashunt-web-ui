@@ -8,82 +8,104 @@
 <body>
   <header class="topbar">
     <img src="./assets/metashuntLogo.png" alt="Logo" class="logo" />
-    <div id="status" class="status">Ready</div>
+    <button id="themeToggle" class="theme-toggle" aria-label="Toggle dark mode">Dark</button>
+    <div id="status" class="status">
+      <span class="dot"></span><span id="statusText">Ready</span>
+    </div>
   </header>
 
   <section class="controls">
-    <div class="row">
+    <div class="ctrl-section">
+      <h4 class="ctrl-title">Measurement</h4>
+      <div class="row">
+        <div class="field">
+          <label>Mode</label>
+          <select id="mode">
+            <option value="continuous">Continuous</option>
+            <option value="burst">Burst</option>
+          </select>
+        </div>
 
-      <div class="field">
-        <label>Mode</label>
-        <select id="mode">
-          <option value="continuous">Continuous</option>
-          <option value="burst">Burst</option>
-        </select>
+        <div class="field mode-burst" style="display:none">
+          <label>Freq (Hz)</label>
+          <input type="number" id="burstHz" min="1" step="1" value="1000"/>
+        </div>
+
+        <div class="field mode-burst" style="display:none">
+          <label>Trigger</label>
+          <select id="trigger">
+            <option value="immediate">Immediate</option>
+            <option value="rising">Rising Current</option>
+            <option value="falling">Falling Current</option>
+            <option value="stage">Stage</option>
+            <option value="manual">Manual (KEY2)</option>
+          </select>
+        </div>
+
+        <div class="field mode-burst trig-current" style="display:none">
+          <label>Level (µA)</label>
+          <input type="number" id="triggerUA" step="1" value="1000"/>
+        </div>
+
+        <div class="field mode-burst trig-stage" style="display:none">
+          <label>Stage #</label>
+          <input type="number" id="stageIndex" min="0" step="1" value="0"/>
+        </div>
+
+        <div class="spacer"></div>
+
+        <button id="startBtn" class="primary">Connect & Start</button>
+        <button id="stopBtn" class="danger">Stop</button>
       </div>
-
-      <div class="field mode-burst" style="display:none">
-        <label>Freq (Hz)</label>
-        <input type="number" id="burstHz" min="1" step="1" value="1000"/>
-      </div>
-
-      <div class="field mode-burst" style="display:none">
-        <label>Trigger</label>
-        <select id="trigger">
-          <option value="immediate">Immediate</option>
-          <option value="rising">Rising Current</option>
-          <option value="falling">Falling Current</option>
-          <option value="stage">Stage</option>
-          <option value="manual">Manual (KEY2)</option>
-        </select>
-      </div>
-
-      <div class="field mode-burst trig-current" style="display:none">
-        <label>Level (µA)</label>
-        <input type="number" id="triggerUA" step="1" value="1000"/>
-      </div>
-
-      <div class="field mode-burst trig-stage" style="display:none">
-        <label>Stage #</label>
-        <input type="number" id="stageIndex" min="0" step="1" value="0"/>
-      </div>
-
-      <div class="spacer"></div>
-
-      <button id="startBtn" class="primary">Connect & Start</button>
-      <button id="stopBtn" class="danger">Stop</button>
     </div>
 
-    <div class="row" style="margin-top:10px;">
-      <div class="field">
-        <label>Device</label>
-        <div id="deviceInfo" class="device-info">Not connected</div>
+    <div class="ctrl-section">
+      <h4 class="ctrl-title">Data &amp; Analysis</h4>
+      <div class="row">
+        <div class="field">
+          <label>Device</label>
+          <div id="deviceInfo" class="device-info">Not connected</div>
+        </div>
+        <div class="field">
+          <label>Threshold (µA)</label>
+          <input type="number" id="thresholdUA" step="10" value="0"/>
+        </div>
+        <div class="field">
+          <label>Battery cap (mAh)</label>
+          <input type="number" id="batteryMah" step="10" value="0"/>
+        </div>
+        <div class="spacer"></div>
+        <button id="loadCsvBtn" class="ghost">Import Log</button>
+        <button id="clearCsvBtn" class="ghost">Clear Log</button>
+        <button id="plotMemoryBtn" class="ghost">View Entire Dataset</button>
+        <button id="exportCsvBtn" class="ghost">Export CSV</button>
+        <button id="exportImgsBtn" class="ghost">Export PNGs</button>
       </div>
-      <div class="spacer"></div>
-      <button id="loadCsvBtn" class="ghost">Import Log</button>
-      <button id="clearCsvBtn" class="ghost">Clear Imported Log</button>
-      <button id="plotMemoryBtn" class="ghost">View Entire Dataset</button>
-      <button id="exportCsvBtn" class="ghost">Export as CSV</button>
-      <button id="exportImgsBtn" class="ghost">Export PNGs</button>
-    </div>
-    <div id="csvOffsetControl" style="display:none; align-items:center; gap:8px;">
-      <label for="csvOffset">CSV offset (s):</label>
-      <button id="csvOffsetDown">−</button>
-      <input type="number" id="csvOffset" value="0" step="0.1" style="width:80px">
-      <button id="csvOffsetUp">+</button>
     </div>
 
-    <div class="row" style="margin-top:10px;">
-      <div class="field">
-        <label>Threshold (µA)</label>
-        <input type="number" id="thresholdUA" step="10" value="0"/>
+    <div class="ctrl-section">
+      <div class="row">
+        <button id="regionBtn" class="ghost">Region Cursors</button>
+        <button id="collapseLabelsBtn" class="ghost collapse-btn">Labels ▾</button>
+        <div class="spacer"></div>
       </div>
-      <div class="field">
-        <label>Battery cap (mAh)</label>
-        <input type="number" id="batteryMah" step="10" value="0"/>
+
+      <div id="labelsPanel" class="collapse-body">
+        <div id="csvOffsetControl" style="display:none; align-items:center; gap:8px; margin-bottom:12px;">
+          <label for="csvOffset">CSV offset (s):</label>
+          <button id="csvOffsetDown">−</button>
+          <input type="number" id="csvOffset" value="0" step="0.1" style="width:80px">
+          <button id="csvOffsetUp">+</button>
+        </div>
+        <div class="row">
+          <div class="field shrink">
+            <input type="text" id="labelText" placeholder="Label text…"/>
+          </div>
+          <button id="addLabelBtn" class="ghost">Add Label at cursor</button>
+          <button id="setRegionLabelBtn" class="ghost">Set Region Label</button>
+          <button id="clearLabelsBtn" class="ghost">Clear Labels</button>
+        </div>
       </div>
-      <button id="regionBtn" class="ghost">Region Cursors</button>
-      <div class="spacer"></div>
     </div>
 
     <div id="statsPanel" class="stats-panel">
@@ -100,15 +122,43 @@
 
   <main class="plots">
     <div class="card">
-      <div id="plot-current" class="plot"></div>
+      <div class="card-head">
+        <h3>Current vs Time</h3>
+        <span class="hint">µA</span>
+      </div>
+      <div id="plot-current" class="plot primary"></div>
     </div>
 
     <div class="card">
-      <div id="plot-charge" class="plot"></div>
+      <div class="card-head">
+        <h3>Accumulated Charge</h3>
+        <span class="hint">µAh</span>
+      </div>
+      <div id="plot-charge" class="plot primary"></div>
     </div>
 
     <div class="card">
-      <div id="plot-cq" class="plot"></div>
+      <div class="card-head">
+        <h3>Occupancy</h3>
+        <span class="hint">Time above level</span>
+      </div>
+      <div id="plot-cq" class="plot secondary"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>Current Distribution</h3>
+        <span class="hint">Histogram</span>
+      </div>
+      <div id="plot-hist" class="plot secondary"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h3>Spectrum</h3>
+        <span class="hint">FFT</span>
+      </div>
+      <div id="plot-fft" class="plot secondary"></div>
     </div>
   </main>
 
