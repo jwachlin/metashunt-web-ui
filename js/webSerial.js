@@ -68,6 +68,7 @@ export class MetaShuntSerial {
     } = opts;
 
     if (!this.port || !this.reader) throw new Error('Device not connected');
+    if (this.running) throw new Error('Already running');
 
     this.mode = mode;
     this.receivedBurst = 0;
@@ -97,7 +98,7 @@ export class MetaShuntSerial {
       else if (trigger === 'stage') { triggerId = 3; triggerLevel = (stageIndex | 0) & 0xFFFF; }
       else if (trigger === 'manual') { triggerId = 4; }
 
-      let rate500 = Math.round(burstHz / 500.0);
+      let rate500 = Math.round((Math.max(500, burstHz)) / 500.0);
       if (rate500 > 255) rate500 = 255;
 
       const hi = (triggerLevel >> 8) & 0xFF;
