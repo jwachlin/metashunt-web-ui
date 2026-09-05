@@ -1647,6 +1647,8 @@ function resetData() {
   pendingRegion = 0;
   const regionBtn = document.getElementById('regionBtn');
   if (regionBtn) { regionBtn.classList.remove('active'); regionBtn.textContent = 'Add Region Cursors'; }
+  const clrBtn = document.getElementById('clearLabelsBtn');
+  if (clrBtn) clrBtn.classList.add('dim');
   if (regionStatsEl) regionStatsEl.textContent = '';
 
   updateDecimStats();
@@ -2104,11 +2106,29 @@ document.addEventListener('DOMContentLoaded', () => {
       regionBounds = [null, null];
     }
     regionBtn.classList.toggle('active', enabled);
-    regionBtn.textContent = enabled ? 'Region: Click 2 Points' : 'Add Region Cursors';
     regionStatsEl.textContent = enabled ? 'Click First Boundary on the Plot' : '';
+    updateRegionBtnState();
     refreshPlots();
   }
   regionBtn.addEventListener('click', () => setRegion(!regionActive));
+
+  // Set the Region button label based on full state: region placed => "Remove
+  // Region Cursor", placing in progress => "Region: Click 2 Points", else the
+  // idle "Add Region Cursors".
+  function updateRegionBtnState() {
+    const placed = regionActive && regionBounds[0] !== null && regionBounds[1] !== null;
+    if (placed) regionBtn.textContent = 'Remove Region Cursor';
+    else if (regionActive) regionBtn.textContent = 'Region: Click 2 Points';
+    else regionBtn.textContent = 'Add Region Cursors';
+  }
+
+  // Clear All Labels dims to the "stopped Stop" red when there is nothing to
+  // clear (no point labels, no region caption, no active region).
+  function updateLabelBtnState() {
+    const hasLabels = notes.length > 0 || regionLabel !== '' ||
+      (regionActive && regionBounds[0] !== null && regionBounds[1] !== null);
+    clearLabelsBtn.classList.toggle('dim', !hasLabels);
+  }
 
   // Click-to-place region handled in the MANUAL LABELS block below
   // (single plotly_click listener manages both regions and labels).
@@ -2139,6 +2159,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const text = popoverText.value.trim();
     if (text && popoverAnchor) {
       notes.push({ id: Date.now(), t: popoverAnchor.x, y: popoverAnchor.y, text, color: theme().text });
+      updateLabelBtnState();
       refreshPlots();
     }
     closePopover();
@@ -2192,10 +2213,12 @@ document.addEventListener('DOMContentLoaded', () => {
         regionBounds = [Math.min(regionBounds[0], x), Math.max(regionBounds[0], x)];
         pendingRegion = 0;
         computeRegionStats();
+        updateRegionBtnState();
         refreshPlots();
         // Both cursors are set: prompt for the region label now.
         const label = prompt('Region Label:', regionLabel || '');
         if (label !== null) { regionLabel = label; refreshPlots(); }
+        updateLabelBtnState();
       }
       return;
     }
@@ -2217,8 +2240,9 @@ document.addEventListener('DOMContentLoaded', () => {
       regionBounds = [null, null];
       pendingRegion = 0;
       regionBtn.classList.remove('active');
-      regionBtn.textContent = 'Add Region Cursors';
     }
+    updateRegionBtnState();
+    updateLabelBtnState();
     refreshPlots();
   });
 
@@ -2262,6 +2286,7 @@ document.addEventListener('DOMContentLoaded', () => {
   triggerSel.addEventListener('change', onTriggerChange);
 
   onTriggerChange();
+  updateLabelBtnState();
   renderLogList();
   updateDataUiState();
 });

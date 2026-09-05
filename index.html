@@ -35,8 +35,9 @@
 
         <div class="field decim-ctrl" id="decimCtrl" style="display:none">
           <label>Decimation</label>
+          <div class="decim-desc">Relative Change For New Decimated Point</div>
           <div class="row" style="align-items:center; gap:8px; flex-wrap:nowrap;">
-            <button id="decimBtn" class="ghost small">Enable Decimation</button>
+            <button id="decimBtn" class="ghost small btn-orange">Enable Decimation</button>
             <label class="decim-slider">
               <input type="range" id="decimSlider" min="0.1" max="10" step="0.1" value="1"/>
               <span id="decimSliderVal">1.0%</span>
@@ -98,10 +99,10 @@
             <input type="number" id="batteryMah" step="10" value="0"/>
           </div>
           <div class="spacer"></div>
-          <button id="loadCsvBtn" class="ghost">Import Log</button>
-          <button id="plotMemoryBtn" class="ghost">View Entire Dataset</button>
-          <button id="exportCsvBtn" class="ghost">Export CSV</button>
-          <button id="exportImgsBtn" class="ghost">Export PNGs</button>
+<button id="loadCsvBtn" class="ghost btn-orange">Import Log</button>
+        <button id="plotMemoryBtn" class="ghost btn-orange">View Entire Dataset</button>
+        <button id="exportCsvBtn" class="ghost btn-orange">Export CSV</button>
+        <button id="exportImgsBtn" class="ghost btn-orange">Export PNGs</button>
         </div>
       </div>
     </div>
@@ -109,8 +110,8 @@
     <div class="ctrl-section">
       <h4 class="ctrl-title">Data Labels</h4>
       <div class="row">
-        <button id="regionBtn" class="ghost">Add Region Cursors</button>
-        <button id="clearLabelsBtn" class="ghost">Clear All Labels</button>
+        <button id="regionBtn" class="ghost btn-blue">Add Region Cursors</button>
+        <button id="clearLabelsBtn" class="ghost btn-red">Clear All Labels</button>
         <div class="spacer"></div>
       </div>
     </div>
@@ -132,8 +133,8 @@
           </div>
         </div>
         <div class="row" id="modelPlaceholder">
-          <button id="addModelBtn" class="ghost">Add Device Model</button>
-          <button id="loadModelBtn" class="ghost">Load Device Model</button>
+          <button id="addModelBtn" class="ghost btn-blue">Add Device Model</button>
+          <button id="loadModelBtn" class="ghost btn-orange">Load Device Model</button>
           <div class="spacer"></div>
         </div>
       </div>
@@ -145,19 +146,25 @@
     </div>
 
     <div id="statsPanel" class="stats-panel">
-      <span class="stat-group-label">Statistics in View:</span>
-      <span class="stat-pill">Avg <b id="stAvg">--</b> µA</span>
-      <span class="stat-pill">Min <b id="stMin">--</b> µA</span>
-      <span class="stat-pill">Max <b id="stMax">--</b> µA</span>
-      <span class="stat-pill">Std. Dev. <b id="stSd">--</b> µA</span>
-      <span class="stat-group-label">Whole Dataset:</span>
-      <span class="stat-pill">Charge <b id="stCharge">--</b> µAh</span>
-      <span class="stat-pill">Predicted Battery Life <b id="stBatt">--</b></span>
-      <span id="stLive" class="stat-pill live">I: <b id="stLiveVal">0.00</b> <span id="stLiveUnit">µA</span></span>
-      <span id="stStored" class="stat-pill stored" style="display:none">Stored <b id="stStoredPts">0</b> pts · ~<b id="stStoredMem">0</b></span>
-      <span id="stDecim" class="stat-pill decim" style="display:none">Decim <b id="stDecimPct">--</b>%</span>
-      <span id="stPoints" class="stat-pill points" style="display:none">Decimation Compression <b id="stRawPts">0</b> → <b id="stRecPts">0</b> pts</span>
-      <span id="regionStats" class="stat-region"></span>
+      <div class="stat-row">
+        <span class="stat-group-label">Statistics in View:</span>
+        <span class="stat-pill">Avg <b id="stAvg">--</b> µA</span>
+        <span class="stat-pill">Min <b id="stMin">--</b> µA</span>
+        <span class="stat-pill">Max <b id="stMax">--</b> µA</span>
+        <span class="stat-pill">Std. Dev. <b id="stSd">--</b> µA</span>
+        <span id="regionStats" class="stat-region"></span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-group-label">Whole Dataset:</span>
+        <span class="stat-pill">Charge <b id="stCharge">--</b> µAh</span>
+        <span class="stat-pill">Predicted Battery Life <b id="stBatt">--</b></span>
+      </div>
+      <div class="stat-row">
+        <span id="stLive" class="stat-pill live">Last Measurement: <b id="stLiveVal">--</b> <span id="stLiveUnit">µA</span></span>
+        <span id="stStored" class="stat-pill stored" style="display:none">Stored <b id="stStoredPts">0</b> pts · ~<b id="stStoredMem">0</b></span>
+        <span id="stDecim" class="stat-pill decim" style="display:none">Decim <b id="stDecimPct">--</b>%</span>
+        <span id="stPoints" class="stat-pill points" style="display:none">Decimation Compression <b id="stRawPts">0</b> → <b id="stRecPts">0</b> pts</span>
+      </div>
     </div>
   </section>
 

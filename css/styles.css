@@ -7,18 +7,19 @@
   --card: #ffffff;
   --text: #222;
   --muted: #6b7280;
-  --primary: #4f46e5;
-  --primary-soft: rgba(79,70,229,0.12);
-  --danger: #ef4444;
+  --primary: #2684bf;                 /* MetaShunt blue */
+  --primary-soft: rgba(38,132,191,0.12);
+  --danger: #ed1b24;                  /* MetaShunt red */
   --border: #e5e7eb;
   --shadow: 0 6px 20px rgba(0,0,0,0.06);
   --radius: 16px;
   --chip: #f5f7fa;
 
   /* Semantic accents */
-  --acc: #0ea5e9;
-  --acc-soft: rgba(14,165,233,0.12);
+  --acc: #2684bf;                     /* MetaShunt blue (icons / active states) */
+  --acc-soft: rgba(38,132,191,0.12);
   --ok: #16a34a;
+  --alt: #f7931e;                     /* MetaShunt orange (default buttons) */
 
   /* Surface tints */
   --data-bg: #ffffff;
@@ -36,21 +37,22 @@
   --card: #171a21;
   --text: #e5e7eb;
   --muted: #9ca3af;
-  --primary: #7c6cf6;
-  --primary-soft: rgba(124,108,246,0.20);
-  --danger: #f87171;
+  --primary: #2684bf;                 /* MetaShunt blue (same in dark) */
+  --primary-soft: rgba(38,132,191,0.20);
+  --danger: #ed1b24;                  /* MetaShunt red (same in dark) */
   --border: #2a2e38;
   --shadow: 0 6px 24px rgba(0,0,0,0.5);
   --chip: #1d212b;
 
-  --acc: #38bdf8;
-  --acc-soft: rgba(56,189,248,0.16);
+  --acc: #2684bf;
+  --acc-soft: rgba(38,132,191,0.16);
   --ok: #4ade80;
+  --alt: #f7931e;                     /* MetaShunt orange */
 
   --data-bg: #10131a;
   --status-running: #4ade80;
-  --status-connecting: #38bdf8;
-  --status-error: #f87171;
+  --status-connecting: var(--acc);
+  --status-error: var(--danger);
   --status-idle: #6b7280;
 
   color-scheme: dark;
@@ -206,26 +208,34 @@ button.primary { background: var(--primary); color: #fff; border-color: transpar
 button.danger { background: var(--danger); color: #fff; border-color: transparent; }
 button.ghost { background: var(--card); }
 button.active { background: var(--acc); color: #fff; border-color: transparent; }
-/* Start Demo: teal, distinct but readable in both light and dark themes. */
+/* Decimation button: orange until pressed, blue (active) once on, regardless of
+   the btn-orange base class specificity. */
+button#decimBtn.btn-orange.active { background: var(--acc); }
+/* Solid brand-colored button variants (override the ghost card background). */
+button.btn-blue  { background: var(--primary); color: #fff; border-color: transparent; }
+button.btn-blue:hover { background: #1f6da0; }
+button.btn-red   { background: var(--danger); color: #fff; border-color: transparent; }
+button.btn-red:hover { background: #cc151d; }
+/* Dulled red when there is nothing to clear (mirrors the disabled Stop look). */
+button.btn-red.dim { opacity: 0.45; filter: saturate(0.55); }
+button.btn-red.dim:hover { background: var(--danger); transform: none; cursor: default; }
+button.btn-orange{ background: var(--alt); color: #fff; border-color: transparent; }
+button.btn-orange:hover { background: #d97e0a; }
+/* Start Demo / Export Model: MetaShunt orange (logo), distinct readable color. */
 button#startDemoBtn.button.demo,
 button.startDemoBtn.button.demo,
-button.demo {
-  background: #14b8a6;
+button.demo,
+button.export {
+  background: var(--alt);
   border-color: transparent;
   color: #ffffff;
 }
 button#startDemoBtn.button.demo:hover,
-button.demo:hover {
-  background: #0d9488;
+button.demo:hover,
+button.export:hover {
+  background: #d97e0a;
 }
 button.demo:disabled { opacity: 0.45; cursor: not-allowed; }
-/* Export Model: distinct amber, readable in light and dark themes. */
-button.export {
-  background: #d97706;
-  border-color: transparent;
-  color: #ffffff;
-}
-button.export:hover { background: #b45309; }
 
 .spacer { flex: 1; }
 
@@ -265,8 +275,46 @@ button.export:hover { background: #b45309; }
 /* Decimation control */
 .decim-ctrl { min-width: 0; }
 .decim-slider { display: flex; align-items: center; gap: 8px; }
-.decim-slider input[type="range"] { flex: 1; min-width: 110px; padding: 0; }
 .decim-slider span { font-size: 12px; color: var(--muted); min-width: 3em; text-align: right; font-variant-numeric: tabular-nums; }
+.decim-desc { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+
+/* Decimation slider thumb/track in MetaShunt blue */
+.decim-slider input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1;
+  min-width: 110px;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 30%, var(--border));
+  outline: none;
+}
+.decim-slider input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+  cursor: pointer;
+}
+.decim-slider input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--primary);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+  cursor: pointer;
+}
+.decim-slider input[type="range"]::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 30%, var(--border));
+}
+.decim-slider input[type="range"]:disabled { opacity: 0.45; }
 
 /* Imported logs list */
 #logsPanel { display: flex; flex-direction: column; gap: 8px; }
@@ -345,9 +393,12 @@ button.export:hover { background: #b45309; }
 /* -------------------- STATS -------------------- */
 
 .stats-panel {
-  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  display: flex; flex-direction: column; gap: 8px;
   margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
   font-size: 13px;
+}
+.stat-row {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
 }
 .stat-group-label {
   font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
