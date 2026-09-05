@@ -60,7 +60,14 @@ const stMax   = document.getElementById('stMax');
 const stSd    = document.getElementById('stSd');
 const stCharge= document.getElementById('stCharge');
 const stBatt  = document.getElementById('stBatt');
-const regionStatsEl = document.getElementById('regionStats');
+let regionStatsEl = document.getElementById('regionStats');
+let stLiveVal = document.getElementById('stLiveVal');
+let stLiveUnit = document.getElementById('stLiveUnit');
+let hintCq = document.getElementById('hint-cq');
+let hintCDist = document.getElementById('hint-cdist');
+let hintCharge = document.getElementById('hint-charge');
+let hintHist = document.getElementById('hint-hist');
+let hintFft = document.getElementById('hint-fft');
 
 // Plotly theme colors, derived from the CSS theme so charts follow toggles.
 function theme() {
@@ -153,11 +160,20 @@ function basicStats(ys) {
   return { n, min, max, avg, sd };
 }
 
-function fmt(v, digits = 1) {
+function fmt(v, digits = 2) {
   return (v === null || v === undefined || Number.isNaN(v)) ? '--'
     : (v >= 1e6 ? (v / 1e6).toFixed(digits) + 'M'
       : (v >= 1e3 ? (v / 1e3).toFixed(digits) + 'k'
         : v.toFixed(digits)));
+}
+
+// Auto-scaled current: nA -> µA -> mA depending on magnitude.
+function formatCurrent(uA) {
+  if (uA === null || uA === undefined || Number.isNaN(uA)) return '--';
+  const abs = Math.abs(uA);
+  if (abs < 1) return `${(uA * 1000).toFixed(2)} nA`;
+  if (abs < 1e6) return `${uA.toFixed(2)} µA`;
+  return `${(uA / 1e6).toFixed(2)} mA`;
 }
 
 function fmtTime(seconds) {
@@ -383,25 +399,47 @@ function fsPerSample(xs) {
 
 /* -------------------- ANALYSIS DATA SOURCE -------------------- */
 
-// Provides {x, y} for the analysis charts. Uses the full retained history
-// when viewing memory, otherwise the live window.
-function currentAnalysisSource() {
-  if (isViewingMemory && curRows.length) {
-    const x = new Array(curRows.length), y = new Array(curRows.length);
-    for (let i = 0; i < curRows.length; i++) {
-      x[i] = curRows[i].t;
-      y[i] = curRows[i].current_uA;
-    }
-    return { x, y };
+// x-range the user is currently zoomed into on the primary plots (or null).
+let visibleRange = null;
+let rangeLock = false;  // guards against our own re-renders feeding relayout
+
+function dataInView(src) {
+  if (!visibleRange || !src.x.length) return src;
+  const [lo, hi] = visibleRange;
+  const fx = [], fy = [];
+  for (let i = 0; i < src.x.length; i++) {
+    const t = src.x[i];
+    if (t >= lo && t <= hi) { fx.push(t); fy.push(src.y[i]); }
   }
-  return { x: liveX, y: liveY };
+  return { x: fx, y: fy };
+}
+
+// Provides {x, y} for the analysis charts. Uses the full retained history
+// when viewing memory, otherwise the live window; then trimmed to the current
+// visible x-range so the analytics match what's zoomed on-screen.
+function currentAnalysisSource() {
+  let src;
+  if (isViewingMemory && curRows.length) {
+    src = { x: curRows.map(r => r.t), y: curRows.map(r => r.current_uA) };
+  } else {
+    src = { x: liveX, y: liveY };
+  }
+  return dataInView(src);
 }
 
 function currentAnalysisY() {
-  if (isViewingMemory && curRows.length) {
-    return curRows.map(r => r.current_uA);
+  return currentAnalysisSource().y;
+}
+
+// Subsets curRows to the visible window (for region stats + memory traces).
+function rowsInView() {
+  if (!visibleRange) return curRows;
+  const [lo, hi] = visibleRange;
+  const out = [];
+  for (const r of curRows) {
+    if (r.t >= lo && r.t <= hi) out.push(r);
   }
-  return liveY;
+  return out;
 }
 
 function renderAnalysisPlots() {
@@ -409,6 +447,126 @@ function renderAnalysisPlots() {
   renderHistogram();
   renderChargeDist();
   renderFft();
+  updateDataSourceHint();
+}
+
+function refreshPlots() {
+  if (isViewingMemory) { renderMemory(); }
+  else {
+    needsUpdate = false;
+    renderWindow();
+  }
+  updateDataSourceHint();
+}
+
+// Debounced refresh of all four analysis charts (zoom drags fire many events).
+let analysisDebounce = null;
+function scheduleAnalysis() {
+  if (analysisDebounce) clearTimeout(analysisDebounce);
+  analysisDebounce = setTimeout(() => {
+    analysisDebounce = null;
+    renderCq();
+    renderHistogram();
+    renderChargeDist();
+    renderFft();
+    updateDataSourceHint();
+  }, 120);
+}
+
+// Debounced re-render of the primary plots after a zoom gesture settles.
+// Re-running react while the user is mid-drag cancels the drag on the charge
+// plot, so defer the full render (decimation / CSV overlay) until they release.
+let settleDebounce = null;
+let lastZoomEvent = 0;
+function scheduleRenderSettle() {
+  lastZoomEvent = Date.now();
+  if (settleDebounce) clearTimeout(settleDebounce);
+  settleDebounce = setTimeout(() => {
+    settleDebounce = null;
+    if (isViewingMemory && curRows.length) renderMemory();
+    else renderWindow();
+  }, 150);
+}
+
+/* ----- Axis linking (deterministic, loop-free) ----- */
+
+// Times at which our own axis writes are in progress. relayout events that fire
+// from OUR writes are suppressed so they cannot ping-pong back through
+// captureXRange.
+let suppressUntil = 0;
+function suppressFor(ms) {
+  suppressUntil = Date.now() + ms;
+}
+function isSuppressed() { return Date.now() < suppressUntil; }
+
+let rangeReadDebounce = null;
+
+function validRange(r) {
+  return r && Array.isArray(r) && r.length === 2 &&
+    Number.isFinite(+r[0]) && Number.isFinite(+r[1]) && +r[0] !== +r[1];
+}
+
+function plotAxis(gdId) {
+  const gd = document.getElementById(gdId);
+  return gd && gd._fullLayout && gd._fullLayout.xaxis;
+}
+
+function appliedRange(gdId) {
+  const ax = plotAxis(gdId);
+  return ax && Array.isArray(ax.range) ? ax.range : null;
+}
+
+function sameRange(a, b) {
+  return a && b &&
+    Math.abs(+a[0] - +b[0]) < 1e-6 && Math.abs(+a[1] - +b[1]) < 1e-6;
+}
+
+// Drive one plot's applied x-range to target (or autorange if target null).
+// No-op when already correct; suppresses events so downstream captureXRange
+// ignores the echo we generate.
+function setPlotAxis(gdId, target) {
+  const cur = appliedRange(gdId);
+  const auto = plotAxis(gdId)?.autorange === true;
+  if (target) {
+    if (!auto && cur && sameRange(cur, target)) return;
+    Plotly.relayout(gdId, { xaxis: { range: target, autorange: false } });
+    suppressFor(50);
+  } else {
+    if (auto) return;
+    Plotly.relayout(gdId, { xaxis: { autorange: true } });
+    suppressFor(50);
+  }
+}
+
+function setVisibleRange(r) {
+  visibleRange = r ? [Math.min(+r[0], +r[1]), Math.max(+r[0], +r[1])] : null;
+  updateDataSourceHint();
+  const target = visibleRange || null;
+  setPlotAxis('plot-current', target);
+  setPlotAxis('plot-charge', target);
+  scheduleRenderSettle();
+}
+
+// The interactive zoom on one plot: capture its applied range, sanitize, mirror
+// to the other and update analyses. Ignored while we are suppressed.
+function captureXRange(gdId) {
+  if (rangeLock || isSuppressed()) return;
+  const cur = appliedRange(gdId);
+  if (!validRange(cur)) {
+    // Reset/double-click: restoring autorange.
+    if (visibleRange !== null) setVisibleRange(null);
+    return;
+  }
+  const r = [Math.min(+cur[0], +cur[1]), Math.max(+cur[0], +cur[1])];
+  const same = visibleRange && sameRange(r, visibleRange);
+  if (same) return;
+  rangeLock = true;
+  try {
+    setVisibleRange(r);
+  } finally {
+    rangeLock = false;
+  }
+  scheduleAnalysis();
 }
 
 function renderLiveStats() {
@@ -421,6 +579,19 @@ function renderLiveStats() {
   const charge = liveQY.length ? liveQY[liveQY.length - 1] : 0;
   stCharge.textContent = fmt(charge, 2);
 
+  // Realtime current (last sample), auto-scaled units.
+  if (liveY.length > 0) {
+    const last = liveY[liveY.length - 1];
+    const formatted = formatCurrent(last);
+    stLiveVal.textContent = formatted.replace(/ (nA|µA|mA)$/, '');
+    stLiveUnit.textContent = formatted.replace(/.* /, '');
+    stLiveVal.parentElement.classList.add('live--on');
+  } else {
+    stLiveVal.textContent = '--';
+    stLiveUnit.textContent = 'µA';
+    stLiveVal.parentElement.classList.remove('live--on');
+  }
+
   // Battery life estimate
   if (cfg.batteryMah > 0 && s.avg > 0) {
     const hours = (cfg.batteryMah * 1000) / s.avg; // mAh / mA
@@ -428,6 +599,23 @@ function renderLiveStats() {
   } else {
     stBatt.textContent = '--';
   }
+}
+
+// Update the subtitle that clarifies which data scope each analysis chart uses.
+function updateDataSourceHint() {
+  let scope;
+  if (visibleRange) {
+    scope = `Visible ${visibleRange[0].toFixed(2)}–${visibleRange[1].toFixed(2)} s`;
+  } else if (isViewingMemory && curRows.length > 0) {
+    scope = 'Entire record';
+  } else {
+    scope = 'Live (last 10 s window)';
+  }
+  if (hintCharge) hintCharge.textContent = `Charge — ${scope}`;
+  if (hintCq) hintCq.textContent = `Time above level — ${scope}`;
+  if (hintHist) hintHist.textContent = `Histogram — ${scope}`;
+  if (hintFft) hintFft.textContent = `Spectrum — ${scope}`;
+  if (hintCDist) hintCDist.textContent = `Charge share — ${scope}`;
 }
 
 /* -------------------- REGION ANALYSIS -------------------- */
@@ -525,22 +713,29 @@ function renderWindow() {
     liveQY.splice(0, dropIdx);
   }
 
-  const layoutUpdate = {
-    margin: { t: 16 },
-    xaxis: { title: 'Time (s)', range: [cutoffT, latestT], autorange: false },
-    yaxis: { title: 'Current (µA)', autorange: true }
-  };
+  // When the user has zoomed in, preserve their x-range instead of re-sliding.
+  const xaxis = visibleRange
+    ? { title: 'Time (s)', range: visibleRange, autorange: false }
+    : { title: 'Time (s)', range: [cutoffT, latestT], autorange: false };
+  renderPrimaryPair(xaxis);
+}
 
+// Renders both primary plots sharing one x-axis definition, guaranteeing they
+// always show the same x-range without racing a separate relayout.
+function renderPrimaryPair(xaxis) {
+  const themedX = themedLayout({ margin: { t: 16 }, xaxis, yaxis: { title: 'Current (µA)', autorange: true } });
   Plotly.react('plot-current', [
     { x: [...liveX], y: [...liveY], mode: 'lines', name: 'Live Current' },
     { x: shiftedCsvX(), y: csvY, mode: 'lines', name: 'Log Current', visible: csvLoaded }
-  ], themedLayout({ ...layoutUpdate, shapes: currentShapes('plot-current'), annotations: currentAnnotations() }));
+  ], { ...themedX, shapes: currentShapes('plot-current'), annotations: currentAnnotations() });
 
   Plotly.react('plot-charge', [
     { x: [...liveQX], y: [...liveQY], mode: 'lines', name: 'Live Charge' },
     { x: shiftedCsvQX(), y: csvQY, mode: 'lines', name: 'Log Charge', visible: csvLoaded }
   ], themedLayout({
-    ...layoutUpdate,
+    margin: { t: 16 },
+    dragmode: false,
+    xaxis,
     yaxis: { title: 'Charge (µAh)', autorange: true },
     shapes: currentShapes('plot-charge')
   }));
@@ -554,6 +749,7 @@ function resetPlots() {
   };
   const layoutResetCharge = {
     margin: { t: 16 },
+    dragmode: false,
     xaxis: { title: 'Time (s)', autorange: true },
     yaxis: { title: 'Charge (µAh)', autorange: true }
   };
@@ -579,29 +775,52 @@ function resetPlots() {
 function renderMemory() {
   if (!curRows.length) return;
 
-  const cx = new Array(curRows.length), cy = new Array(curRows.length);
-  const qx = new Array(curRows.length), qy = new Array(curRows.length);
-  for (let i = 0; i < curRows.length; i++) {
-    cx[i] = curRows[i].t;
-    cy[i] = curRows[i].current_uA;
-    if (curRows[i].q !== undefined) { qx[i] = curRows[i].t; qy[i] = curRows[i].q; }
+  let src = curRows;
+  if (visibleRange) {
+    const [lo, hi] = visibleRange;
+    src = [];
+    for (const r of curRows) if (r.t >= lo && r.t <= hi) src.push(r);
+  }
+  if (!src.length) {
+    // Zoomed to an empty region: clear both primary traces but still apply the
+    // x-range (and keep charge in sync) so the axis updates visibly.
+    const emptyX = { title: 'Time (s)', range: visibleRange, autorange: false };
+    Plotly.react('plot-current', [
+      { x: [], y: [], mode: 'lines', name: 'Live Current' },
+      { x: [], y: [], mode: 'lines', name: 'Log Current', visible: csvLoaded }
+    ], themedLayout({ margin: { t: 16 }, xaxis: emptyX, yaxis: { title: 'Current (µA)', autorange: true } }));
+    Plotly.react('plot-charge', [
+      { x: [], y: [], mode: 'lines', name: 'Live Charge' },
+      { x: [], y: [], mode: 'lines', name: 'Log Charge', visible: csvLoaded }
+    ], themedLayout({ margin: { t: 16 }, dragmode: false, xaxis: emptyX, yaxis: { title: 'Charge (µAh)', autorange: true } }));
+    renderAnalysisPlots();
+    return;
+  }
+
+  const cx = new Array(src.length), cy = new Array(src.length);
+  const qx = new Array(src.length), qy = new Array(src.length);
+  for (let i = 0; i < src.length; i++) {
+    cx[i] = src[i].t;
+    cy[i] = src[i].current_uA;
+    if (src[i].q !== undefined) { qx[i] = src[i].t; qy[i] = src[i].q; }
   }
 
   const cur = decimate(cx, cy, PLOT_MAX);
   const chr = decimate(qx, qy, PLOT_MAX);
 
-  const layoutCurrent = { margin: { t: 16 }, xaxis: { title: 'Time (s)', autorange: true }, yaxis: { title: 'Current (µA)', autorange: true } };
-  const layoutCharge  = { margin: { t: 16 }, xaxis: { title: 'Time (s)', autorange: true }, yaxis: { title: 'Charge (µAh)', autorange: true } };
+  const xaxis = visibleRange
+    ? { title: 'Time (s)', range: visibleRange, autorange: false }
+    : { title: 'Time (s)', autorange: true };
 
   Plotly.react('plot-current', [
     { x: cur.x, y: cur.y, mode: 'lines', name: 'Live Current' },
     { x: shiftedCsvX(), y: csvY, mode: 'lines', name: 'Log Current', visible: csvLoaded }
-  ], themedLayout({ ...layoutCurrent, shapes: currentShapes('plot-current'), annotations: currentAnnotations() }));
+  ], themedLayout({ margin: { t: 16 }, xaxis, yaxis: { title: 'Current (µA)', autorange: true }, shapes: currentShapes('plot-current'), annotations: currentAnnotations() }));
 
   Plotly.react('plot-charge', [
     { x: chr.x, y: chr.y, mode: 'lines', name: 'Live Charge' },
     { x: shiftedCsvQX(), y: csvQY, mode: 'lines', name: 'Log Charge', visible: csvLoaded }
-  ], themedLayout({ ...layoutCharge, shapes: currentShapes('plot-charge') }));
+  ], themedLayout({ margin: { t: 16 }, dragmode: false, xaxis, yaxis: { title: 'Charge (µAh)', autorange: true }, shapes: currentShapes('plot-charge') }));
 
   renderAnalysisPlots();
 }
@@ -614,11 +833,52 @@ setInterval(() => {
   needsUpdate = false;
   renderWindow();
   renderLiveStats();
+  updateDataSourceHint();
   if (tick % 5 === 0) renderCq();
   if (tick % 5 === 0) renderHistogram();
   if (tick % 5 === 0) renderChargeDist();
   if (tick % 20 === 0) renderFft();
 }, FLUSH_MS);
+
+/* -------------------- AXIS SYNC SAFETY NET -------------------- */
+
+// Plotly's relayout/react interplay can occasionally drop an axis update for a
+// secondary plot. Poll both primary plots' APPLIED (post-layout) x-ranges and
+// force the charge plot to follow the current plot whenever they diverge.
+setInterval(() => {
+  if (rangeLock || isSuppressed()) return;
+  // Skip while a zoom gesture is in progress (relayout events are rapid).
+  if (Date.now() - lastZoomEvent < 400) return;
+  const cur = document.getElementById('plot-current');
+  const chg = document.getElementById('plot-charge');
+  if (!cur || !chg) return;
+  const curAx = cur._fullLayout && cur._fullLayout.xaxis;
+  const chgAx = chg._fullLayout && chg._fullLayout.xaxis;
+  if (!curAx || !chgAx) return;
+  const cr = Array.isArray(curAx.range) ? curAx.range : null;
+  const gr = Array.isArray(chgAx.range) ? chgAx.range : null;
+  const curAuto = curAx.autorange === true;
+  const chgAuto = chgAx.autorange === true;
+
+  // Both already consistent: nothing to do.
+  if (curAuto && chgAuto) return;
+  if (!curAuto && !chgAuto && gr && sameRange(cr, gr)) return;
+
+  rangeLock = true;
+  try {
+    if (curAuto || !cr) {
+      // Current is auto: restore charge to auto to match.
+      if (!chgAuto) setPlotAxis('plot-charge', null);
+    } else {
+      // Mirror the applied current range onto charge; if a zoom state exists,
+      // keep it in visibleRange so analytics follow.
+      if (visibleRange !== null) setVisibleRange(cr);
+      else setPlotAxis('plot-charge', [Math.min(+cr[0], +cr[1]), Math.max(+cr[0], +cr[1])]);
+    }
+  } finally {
+    rangeLock = false;
+  }
+}, 300);
 
 /* -------------------- MEASUREMENT -------------------- */
 
@@ -647,6 +907,10 @@ function resetData() {
 
   isViewingMemory = false; // Release memory lock
   needsUpdate = false;
+
+  // Drop any zoom; return to default auto/sliding ranges.
+  visibleRange = null;
+  rangeLock = false;
 
   regionActive = false;
   regionBounds = [null, null];
@@ -852,8 +1116,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const csvCharge  = { x: [], y: [], mode: 'lines', name: 'Log Charge', visible: false };
 
   Plotly.newPlot('plot-charge', [liveCharge, csvCharge],
-    themedLayout({ margin: { t: 16 }, xaxis: { title: 'Time (s)' }, yaxis: { title: 'Charge (µAh)' } }),
-    { displaylogo: false, responsive: true }
+    themedLayout({ margin: { t: 16 }, dragmode: false, xaxis: { title: 'Time (s)' }, yaxis: { title: 'Charge (µAh)' } }),
+    { displaylogo: false, responsive: true, scrollZoom: false, displayModeBar: false, doubleClick: false }
   );
 
   Plotly.newPlot('plot-cq', [{
@@ -950,14 +1214,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   regionBtn.addEventListener('click', () => setRegion(!regionActive));
 
-  function refreshPlots() {
-    if (isViewingMemory) { renderMemory(); }
-    else {
-      needsUpdate = false;
-      renderWindow();
-    }
-  }
-
   // Click-to-place region handled in the MANUAL LABELS block below
   // (single plotly_click listener manages both regions and labels).
 
@@ -998,6 +1254,25 @@ document.addEventListener('DOMContentLoaded', () => {
   popoverText.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') submitPopover();
     else if (e.key === 'Escape') closePopover();
+  });
+
+  // Link the primary plots' x-axes: zooming/panning on the CURRENT plot drives
+  // the shared x-range; the CHARGE plot is a passive mirror (dragmode:false).
+  function onRelayout(id) {
+    // Debounce so a drag's trailing events don't churn; read applied state.
+    if (rangeLock || isSuppressed()) return;
+    clearTimeout(rangeReadDebounce);
+    rangeReadDebounce = setTimeout(() => captureXRange(id), 30);
+  }
+  document.getElementById('plot-current').on('plotly_relayout', () => onRelayout('plot-current'));
+  document.getElementById('plot-current').on('plotly_doubleclick', () => {
+    if (rangeLock) return;
+    rangeLock = true;
+    try {
+      setVisibleRange(null);
+      refreshPlots();
+    } finally { rangeLock = false; }
+    scheduleAnalysis();
   });
 
   // Label flow: click the plot (when region inactive) opens an inline label

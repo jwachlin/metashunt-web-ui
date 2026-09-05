@@ -73,7 +73,7 @@
           <div id="deviceInfo" class="device-info">Not connected</div>
         </div>
         <div class="field">
-          <label>Battery cap (mAh)</label>
+          <label>Battery Capacity (mAh)</label>
           <input type="number" id="batteryMah" step="10" value="0"/>
         </div>
         <div class="spacer"></div>
@@ -114,6 +114,7 @@
       <span class="stat-pill">Std <b id="stSd">--</b></span>
       <span class="stat-pill">Charge <b id="stCharge">--</b> µAh</span>
       <span class="stat-pill">Batt life <b id="stBatt">--</b></span>
+      <span id="stLive" class="stat-pill live">I: <b id="stLiveVal">0.00</b> <span id="stLiveUnit">µA</span></span>
       <span id="regionStats" class="stat-region"></span>
     </div>
   </section>
@@ -130,7 +131,7 @@
     <div class="card">
       <div class="card-head">
         <h3>Accumulated Charge</h3>
-        <span class="hint">µAh</span>
+        <span class="hint" id="hint-charge">µAh</span>
       </div>
       <div id="plot-charge" class="plot primary"></div>
     </div>
@@ -138,7 +139,7 @@
     <div class="card">
       <div class="card-head">
         <h3>Occupancy</h3>
-        <span class="hint">Time above level</span>
+        <span class="hint" id="hint-cq">Time above level</span>
       </div>
       <div id="plot-cq" class="plot secondary"></div>
     </div>
@@ -146,7 +147,7 @@
     <div class="card">
       <div class="card-head">
         <h3>Current Distribution</h3>
-        <span class="hint">Histogram</span>
+        <span class="hint" id="hint-hist">Histogram</span>
       </div>
       <div id="plot-hist" class="plot secondary"></div>
     </div>
@@ -154,7 +155,7 @@
     <div class="card">
       <div class="card-head">
         <h3>Spectrum</h3>
-        <span class="hint">FFT</span>
+        <span class="hint" id="hint-fft">FFT</span>
       </div>
       <div id="plot-fft" class="plot secondary"></div>
     </div>
@@ -162,7 +163,7 @@
     <div class="card">
       <div class="card-head">
         <h3>Energy Share by Current</h3>
-        <span class="hint">% of charge per bin</span>
+        <span class="hint" id="hint-cdist">% of charge per bin</span>
       </div>
       <div id="plot-charge-dist" class="plot secondary"></div>
     </div>
