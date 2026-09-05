@@ -177,9 +177,9 @@ button {
   box-shadow: var(--shadow);
   background: var(--card);
   color: var(--text);
-  font-weight: 500;
   transition: transform 0.08s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
+button.small { padding: 7px 10px; font-size: 12px; border-radius: 10px; }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 button:not(:disabled):hover { transform: translateY(-1px); }
 button:focus-visible {
@@ -210,6 +210,12 @@ button.active { background: var(--acc); color: #fff; border-color: transparent; 
   font-size: 0.9em;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+
+/* Decimation control */
+.decim-ctrl { min-width: 0; }
+.decim-slider { display: flex; align-items: center; gap: 8px; }
+.decim-slider input[type="range"] { flex: 1; min-width: 110px; padding: 0; }
+.decim-slider span { font-size: 12px; color: var(--muted); min-width: 3em; text-align: right; font-variant-numeric: tabular-nums; }
 
 /* -------------------- PLOTS -------------------- */
 

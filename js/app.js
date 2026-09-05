@@ -1,4 +1,5 @@
 import { MetaShuntSerial } from './webSerial.js';
+import { SampleStore, Decimator } from './sampleStore.js';
 
 /* -------------------- DOM -------------------- */
 
@@ -25,7 +26,11 @@ device.onStatus(setStatus);
 
 /* -------------------- DATA -------------------- */
 
-let curRows = []; // { t, current_uA, q } - full retained history (memory-bounded)
+let curRows = new SampleStore();      // compact decimated/raw retained history
+let rawCount = 0;                     // total datapoints received this run
+let decimEnabled = false;             // user toggled decimation
+let decimIntensity = 0.01;            // fraction (0.001..0.10)
+let decimator = new Decimator(decimIntensity);
 
 // Dedicated visual buffers for the sliding window
 let liveX = [], liveY = [];
@@ -68,6 +73,14 @@ let hintCDist = document.getElementById('hint-cdist');
 let hintCharge = document.getElementById('hint-charge');
 let hintHist = document.getElementById('hint-hist');
 let hintFft = document.getElementById('hint-fft');
+let stDecim = document.getElementById('stDecim');
+let stDecimPct = document.getElementById('stDecimPct');
+let stPoints = document.getElementById('stPoints');
+let stRecPts = document.getElementById('stRecPts');
+let stRawPts = document.getElementById('stRawPts');
+let stStored = document.getElementById('stStored');
+let stStoredPts = document.getElementById('stStoredPts');
+let stStoredMem = document.getElementById('stStoredMem');
 
 // Plotly theme colors, derived from the CSS theme so charts follow toggles.
 function theme() {
@@ -128,10 +141,7 @@ function capMemory() {
   const target = MAX_MEMORY / 2;
   const step = Math.ceil(curRows.length / target);
   if (step < 2) return;
-  const kept = new Array(Math.ceil(curRows.length / step));
-  let k = 0;
-  for (let i = 0; i < curRows.length; i += step) kept[k++] = curRows[i];
-  curRows = kept;
+  curRows.subsample(step);
 }
 
 function shiftedCsvX()  { return csvX.map(x => x + csvTimeOffset); }
@@ -366,6 +376,23 @@ function fftSpectrum(xs) {
 }
 
 function renderFft() {
+  // FFT requires uniform, full-resolution sampling. Decimated data is neither:
+  // show an explanatory overlay instead of computing a meaningless spectrum.
+  if (decimEnabled && isViewingMemory) {
+    Plotly.react('plot-fft', [], themedLayout({
+      margin: { t: 16 },
+      xaxis: { title: 'Frequency (Hz)' },
+      yaxis: { title: 'Mag (µA)', type: 'log', range: [0, 1] },
+      annotations: [{
+        text: 'FFT not available for decimated data.<br>Zoom the live 10 s view for spectrum analysis.',
+        showarrow: false, xref: 'paper', yref: 'paper',
+        x: 0.5, y: 0.5, xanchor: 'center', yanchor: 'middle',
+        font: { color: theme().muted, size: 13 }, align: 'center'
+      }]
+    }));
+    return;
+  }
+
   const src = currentAnalysisSource();
   const n = src.x.length;
   if (n < 8) return;
@@ -420,7 +447,10 @@ function dataInView(src) {
 function currentAnalysisSource() {
   let src;
   if (isViewingMemory && curRows.length) {
-    src = { x: curRows.map(r => r.t), y: curRows.map(r => r.current_uA) };
+    const n = curRows.length;
+    const x = new Array(n), y = new Array(n);
+    for (let i = 0; i < n; i++) { x[i] = curRows.t[i]; y[i] = curRows.i[i]; }
+    src = { x, y };
   } else {
     src = { x: liveX, y: liveY };
   }
@@ -431,13 +461,19 @@ function currentAnalysisY() {
   return currentAnalysisSource().y;
 }
 
-// Subsets curRows to the visible window (for region stats + memory traces).
+// Subsets curRows to the visible window (as index ranges for store access).
 function rowsInView() {
-  if (!visibleRange) return curRows;
-  const [lo, hi] = visibleRange;
   const out = [];
-  for (const r of curRows) {
-    if (r.t >= lo && r.t <= hi) out.push(r);
+  if (!visibleRange) {
+    for (let i = 0; i < curRows.length; i++) {
+      out.push({ t: curRows.t[i], current_uA: curRows.i[i], q: curRows.q[i] });
+    }
+    return out;
+  }
+  const [lo, hi] = visibleRange;
+  for (let i = 0; i < curRows.length; i++) {
+    const t = curRows.t[i];
+    if (t >= lo && t <= hi) out.push({ t, current_uA: curRows.i[i], q: curRows.q[i] });
   }
   return out;
 }
@@ -599,6 +635,35 @@ function renderLiveStats() {
   } else {
     stBatt.textContent = '--';
   }
+
+  updateDecimStats();
+}
+
+function formatBytes(b) {
+  if (b >= 1e6) return (b / 1e6).toFixed(1) + ' MB';
+  if (b >= 1e3) return (b / 1e3).toFixed(1) + ' KB';
+  return b + ' B';
+}
+
+// Update storage + decimation indicators in the stats bar.
+// "Stored" always appears while recording; decimation pills add detail.
+function updateDecimStats() {
+  const recording = rawCount > 0;
+  if (stStored) {
+    stStored.style.display = recording ? '' : 'none';
+    if (recording) {
+      stStoredPts.textContent = curRows.length.toLocaleString();
+      stStoredMem.textContent = formatBytes(curRows.memBytes());
+    }
+  }
+  const showDecim = decimEnabled && recording;
+  if (stDecim) stDecim.style.display = showDecim ? '' : 'none';
+  if (stPoints) stPoints.style.display = showDecim ? '' : 'none';
+  if (showDecim) {
+    stDecimPct.textContent = (decimIntensity * 100).toFixed(1);
+    stRawPts.textContent = rawCount.toLocaleString();
+    stRecPts.textContent = curRows.length.toLocaleString();
+  }
 }
 
 // Update the subtitle that clarifies which data scope each analysis chart uses.
@@ -611,10 +676,11 @@ function updateDataSourceHint() {
   } else {
     scope = 'Live (last 10 s window)';
   }
+  if (decimEnabled && isViewingMemory && !visibleRange) scope += ' (decimated)';
   if (hintCharge) hintCharge.textContent = `Charge — ${scope}`;
   if (hintCq) hintCq.textContent = `Time above level — ${scope}`;
   if (hintHist) hintHist.textContent = `Histogram — ${scope}`;
-  if (hintFft) hintFft.textContent = `Spectrum — ${scope}`;
+  if (hintFft) hintFft.textContent = decimEnabled && isViewingMemory ? 'Spectrum — unavailable (decimated)' : `Spectrum — ${scope}`;
   if (hintCDist) hintCDist.textContent = `Charge share — ${scope}`;
 }
 
@@ -680,15 +746,17 @@ function computeRegionStats() {
   }
   // curRows is sorted ascending by t; scan the window
   let n = 0, sum = 0, sumSq = 0, min = Infinity, max = -Infinity, prevT = null, charge = 0;
-  for (const r of curRows) {
-    if (r.t < lo) { prevT = r.t; continue; }
-    if (r.t > hi) break;
-    const v = r.current_uA;
+  const T = curRows.t, I = curRows.i;
+  for (let idx = 0; idx < curRows.length; idx++) {
+    const tt = T[idx];
+    if (tt < lo) { prevT = tt; continue; }
+    if (tt > hi) break;
+    const v = I[idx];
     n++; sum += v; sumSq += v * v;
     if (v < min) min = v;
     if (v > max) max = v;
-    if (prevT !== null) charge += v * (r.t - prevT) / 3600.0;
-    prevT = r.t;
+    if (prevT !== null) charge += v * (tt - prevT) / 3600.0;
+    prevT = tt;
   }
   if (!n) { regionStatsEl.textContent = 'No data in region'; return; }
   const avg = sum / n;
@@ -775,13 +843,16 @@ function resetPlots() {
 function renderMemory() {
   if (!curRows.length) return;
 
-  let src = curRows;
+  // Build index subset within visible range, else the whole store.
+  const T = curRows.t, I = curRows.i, Q = curRows.q;
+  const idxs = [];
   if (visibleRange) {
     const [lo, hi] = visibleRange;
-    src = [];
-    for (const r of curRows) if (r.t >= lo && r.t <= hi) src.push(r);
+    for (let i = 0; i < curRows.length; i++) if (T[i] >= lo && T[i] <= hi) idxs.push(i);
+  } else {
+    for (let i = 0; i < curRows.length; i++) idxs.push(i);
   }
-  if (!src.length) {
+  if (!idxs.length) {
     // Zoomed to an empty region: clear both primary traces but still apply the
     // x-range (and keep charge in sync) so the axis updates visibly.
     const emptyX = { title: 'Time (s)', range: visibleRange, autorange: false };
@@ -797,12 +868,14 @@ function renderMemory() {
     return;
   }
 
-  const cx = new Array(src.length), cy = new Array(src.length);
-  const qx = new Array(src.length), qy = new Array(src.length);
-  for (let i = 0; i < src.length; i++) {
-    cx[i] = src[i].t;
-    cy[i] = src[i].current_uA;
-    if (src[i].q !== undefined) { qx[i] = src[i].t; qy[i] = src[i].q; }
+  const cx = new Array(idxs.length), cy = new Array(idxs.length);
+  const qx = new Array(idxs.length), qy = new Array(idxs.length);
+  for (let k = 0; k < idxs.length; k++) {
+    const i = idxs[k];
+    cx[k] = T[i];
+    cy[k] = I[i];
+    qx[k] = T[i];
+    qy[k] = Q[i];
   }
 
   const cur = decimate(cx, cy, PLOT_MAX);
@@ -883,14 +956,22 @@ setInterval(() => {
 /* -------------------- MEASUREMENT -------------------- */
 
 function handleMeasurement(batch) {
-  // 1. Infinite-ish memory storage (bounded) for CSV exports and Memory plotting
-  for (let i = 0; i < batch.x.length; i++) {
-    curRows.push({ t: batch.x[i], current_uA: batch.y[i], q: batch.q[i] });
+  const n = batch.x.length;
+
+  // 1. Retained history (compact store, optionally decimated).
+  if (decimEnabled) {
+    for (let i = 0; i < n; i++) {
+      const d = decimator.step(batch.x[i], batch.y[i], batch.q[i]);
+      if (d) curRows.push(d.t, d.i, d.q);
+    }
+  } else {
+    for (let i = 0; i < n; i++) curRows.push(batch.x[i], batch.y[i], batch.q[i]);
   }
+  rawCount += n;
   capMemory();
 
-  // 2. Feed the high-speed rendering buffer
-  for (let i = 0; i < batch.x.length; i++) {
+  // 2. Feed the high-speed rendering buffer (always full resolution)
+  for (let i = 0; i < n; i++) {
     liveX.push(batch.x[i]);
     liveY.push(batch.y[i]);
     liveQX.push(batch.x[i]);
@@ -901,7 +982,9 @@ function handleMeasurement(batch) {
 }
 
 function resetData() {
-  curRows = [];
+  curRows.clear();
+  rawCount = 0;
+  decimator.reset();
   liveX.length = liveY.length = 0;
   liveQX.length = liveQY.length = 0;
 
@@ -919,6 +1002,7 @@ function resetData() {
   if (regionBtn) { regionBtn.classList.remove('active'); regionBtn.textContent = 'Region Cursors'; }
   if (regionStatsEl) regionStatsEl.textContent = '';
 
+  updateDecimStats();
   resetPlots();
 }
 
@@ -987,7 +1071,9 @@ function parseCsvData(csvContent) {
 exportCsvBtn.addEventListener('click', () => {
   if (!curRows.length) return alert('No data');
   const header = 'time [s],current [µA]\n';
-  const body = curRows.map(r => `${r.t},${r.current_uA}`).join('\n');
+  const rows = [];
+  for (let i = 0; i < curRows.length; i++) rows.push(`${curRows.t[i]},${curRows.i[i]}`);
+  const body = rows.join('\n');
   download(new Blob([header + body], { type: 'text/csv' }), 'metashunt.csv');
 });
 
@@ -1048,6 +1134,46 @@ document.addEventListener('DOMContentLoaded', () => {
 
   burstHz.min = 500; // hardware is 500 Hz-quantized
 
+  /* -------------------- DECIMATION CONTROLS -------------------- */
+
+  const decimCtrl = document.getElementById('decimCtrl');
+  const decimBtn = document.getElementById('decimBtn');
+  const decimSlider = document.getElementById('decimSlider');
+  const decimSliderVal = document.getElementById('decimSliderVal');
+
+  function syncDecimUi() {
+    if (uiRunning) {
+      decimBtn.disabled = true;
+    } else {
+      decimBtn.disabled = false;
+    }
+    decimBtn.classList.toggle('active', decimEnabled);
+    decimBtn.textContent = decimEnabled ? 'Decimation On' : 'Enable Decimation';
+    decimSlider.disabled = decimEnabled || uiRunning;
+    updateDecimStats();
+  }
+
+  decimBtn.addEventListener('click', () => {
+    if (uiRunning) return; // must toggle before starting
+    decimEnabled = !decimEnabled;
+    decimIntensity = parseFloat(decimSlider.value) / 100;
+    decimator = new Decimator(decimIntensity);
+    syncDecimUi();
+    if (decimEnabled) renderFft();
+  });
+
+  decimSlider.addEventListener('input', () => {
+    decimIntensity = parseFloat(decimSlider.value) / 100;
+    decimSliderVal.textContent = (decimIntensity * 100).toFixed(1) + '%';
+    if (decimEnabled) decimator = new Decimator(decimIntensity);
+  });
+
+  function showDecimCtrl(show) {
+    decimCtrl.style.display = show ? '' : 'none';
+    if (!show) { decimEnabled = false; decimator.reset(); syncDecimUi(); }
+  }
+  showDecimCtrl(modeSel.value === 'continuous');
+
   /* -------------------- THEME TOGGLE -------------------- */
 
   const themeToggle = document.getElementById('themeToggle');
@@ -1086,6 +1212,7 @@ document.addEventListener('DOMContentLoaded', () => {
     uiRunning = running;
     startBtn.disabled = running;
     stopBtn.disabled = !running;
+    if (typeof syncDecimUi === 'function') syncDecimUi();
   }
   setUiRunning(false);
 
@@ -1350,6 +1477,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const isBurst = modeSel.value === 'burst';
     document.querySelectorAll('.mode-burst').forEach(n => n.style.display = isBurst ? 'flex' : 'none');
     onTriggerChange();
+    // Decimation only makes sense in continuous mode.
+    if (typeof showDecimCtrl === 'function') showDecimCtrl(modeSel.value === 'continuous');
   });
 
   triggerSel.addEventListener('change', onTriggerChange);
