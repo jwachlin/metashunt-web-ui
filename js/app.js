@@ -48,9 +48,10 @@ let tick = 0;
 
 /* -------------------- ANALYSIS CONFIG/STATE -------------------- */
 
-const cfg = { thresholdUA: 0, batteryMah: 0 };
+const cfg = { batteryMah: 0 };
 let regionActive = false;
 let regionBounds = [null, null]; // [xLo, xHi] seconds
+let pendingRegion = 0;           // 0=off, 1=awaiting first click, 2=awaiting second click
 
 // Live stats DOM
 const stAvg   = document.getElementById('stAvg');
@@ -59,7 +60,6 @@ const stMax   = document.getElementById('stMax');
 const stSd    = document.getElementById('stSd');
 const stCharge= document.getElementById('stCharge');
 const stBatt  = document.getElementById('stBatt');
-const stViol  = document.getElementById('stViol');
 const regionStatsEl = document.getElementById('regionStats');
 
 // Plotly theme colors, derived from the CSS theme so charts follow toggles.
@@ -90,7 +90,6 @@ function themedLayout(base) {
 // Manual labels: point annotations + named regions
 let notes = [];            // { id, t, y, text, color }
 let regionLabel = '';      // shown on the region, if set
-let lastClickT = null;     // cursor x from last click on the current plot
 
 /* -------------------- HELPERS -------------------- */
 
@@ -170,13 +169,6 @@ function fmtTime(seconds) {
   return h > 0 ? `${h}h ${m}m ${s}s` : `${m}m ${s}s`;
 }
 
-function thresholdViolations(ys) {
-  if (cfg.thresholdUA <= 0 || !ys || !ys.length) return 0;
-  let c = 0;
-  for (const v of ys) if (v > cfg.thresholdUA) c++;
-  return c;
-}
-
 // Cumulative-quantile (occupancy) data: % of time current >= each level.
 function cqData(ys, bins = 64) {
   if (!ys || !ys.length) return { levels: [], prob: [] };
@@ -254,6 +246,57 @@ function renderHistogram() {
     margin: { t: 16 },
     xaxis: { title: 'Current (µA)' },
     yaxis: { title: 'Samples' }
+  }));
+}
+
+/* -------------------- CHARGE DISTRIBUTION -------------------- */
+
+// Portion of total charge (%) spent while current sits in each bin.
+// q += I(t) * dt accumulated per bin; normalized to sum to 100.
+function chargeHistData(xs, ys, bins = 48) {
+  const n = xs.length;
+  if (n < 2) return { centers: [], frac: [] };
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const v = ys[i];
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  const span = (hi - lo) || 1;
+  if (span <= 0) span = 1;
+
+  const acc = new Float64Array(bins);
+  let total = 0;
+  for (let i = 1; i < n; i++) {
+    const dt = xs[i] - xs[i - 1];
+    if (!(dt > 0)) continue;
+    const q = ys[i] * dt; // charge ∝ I·Δt  (µA·s)
+    let b = Math.floor((ys[i] - lo) / span * bins);
+    if (b < 0) b = 0; else if (b >= bins) b = bins - 1;
+    acc[b] += q;
+    total += q;
+  }
+  if (total <= 0) return { centers: [], frac: [] };
+
+  const centers = new Array(bins), frac = new Array(bins);
+  for (let b = 0; b < bins; b++) {
+    centers[b] = lo + span * (b + 0.5) / bins;
+    frac[b] = (acc[b] / total) * 100;
+  }
+  return { centers, frac };
+}
+
+function renderChargeDist() {
+  const src = currentAnalysisSource();
+  const cd = chargeHistData(src.x, src.y);
+  Plotly.react('plot-charge-dist', [{
+    x: cd.centers, y: cd.frac, type: 'bar',
+    marker: { color: '#14b8a6', line: { width: 0 } },
+    name: 'Charge share'
+  }], themedLayout({
+    margin: { t: 16 },
+    xaxis: { title: 'Current (µA)' },
+    yaxis: { title: 'Portion of charge (%)', range: [0, 100], autorange: false }
   }));
 }
 
@@ -364,6 +407,7 @@ function currentAnalysisY() {
 function renderAnalysisPlots() {
   renderCq();
   renderHistogram();
+  renderChargeDist();
   renderFft();
 }
 
@@ -384,49 +428,27 @@ function renderLiveStats() {
   } else {
     stBatt.textContent = '--';
   }
-
-  // Threshold violations
-  const v = thresholdViolations(liveY);
-  if (cfg.thresholdUA > 0) {
-    stViol.style.display = '';
-    stViol.textContent = `${v} ≥ ${fmt(cfg.thresholdUA)} µA`;
-    stViol.style.opacity = v > 0 ? 1 : 0.45;
-  } else {
-    stViol.style.display = 'none';
-  }
 }
 
 /* -------------------- REGION ANALYSIS -------------------- */
 
 function currentShapes(plotId) {
   const shapes = [];
-  // Threshold horizontal line (current + charge plots)
-  if (cfg.thresholdUA > 0) {
-    shapes.push({
-      type: 'line', xref: 'paper', x0: 0, x1: 1, yref: 'y',
-      y0: cfg.thresholdUA, y1: cfg.thresholdUA,
-      line: { dash: 'dash', color: '#ef4444', width: 1 }
-    });
-  }
-  // Region cursors (current plot only)
+  // Region cursors (current plot only) - drawn from our state, not editable
   if (plotId === 'plot-current' && regionActive) {
     const [lo, hi] = regionBounds;
     if (lo !== null) {
-      if (hi !== null && hi > lo) {
-        shapes.push({
-          type: 'rect', yref: 'paper', y0: 0, y1: 1, xref: 'x',
-          x0: lo, x1: hi,
-          fillcolor: 'rgba(14,165,233,0.08)', line: { width: 0 }
-        });
-      }
-      for (const x of [lo, hi]) {
-        if (x === null) continue;
-        shapes.push({
-          type: 'line', yref: 'paper', y0: 0, y1: 1, xref: 'x',
-          x0: x, x1: x, editable: true,
-          line: { dash: 'dot', color: '#0ea5e9', width: 1 },
-          name: 'region-cursor'
-        });
+      const line = { dash: 'dot', color: '#0ea5e9', width: 2 };
+      shapes.push({ type: 'line', yref: 'paper', y0: 0, y1: 1, xref: 'x', x0: lo, x1: lo, line });
+      if (hi !== null) {
+        if (hi > lo) {
+          shapes.push({
+            type: 'rect', yref: 'paper', y0: 0, y1: 1, xref: 'x',
+            x0: lo, x1: hi,
+            fillcolor: 'rgba(14,165,233,0.10)', line: { width: 0 }
+          });
+        }
+        shapes.push({ type: 'line', yref: 'paper', y0: 0, y1: 1, xref: 'x', x0: hi, x1: hi, line });
       }
     }
   }
@@ -440,7 +462,7 @@ function currentAnnotations() {
     ann.push({
       x: n.t, y: n.y, text: n.text, showarrow: true, arrowhead: 2,
       ax: 20, ay: -30, xref: 'x', yref: 'y',
-      font: { color: n.color || '#0f172a', size: 12 }
+      font: { color: n.color || theme().text, size: 12 }
     });
   }
   // Named region caption
@@ -456,18 +478,6 @@ function currentAnnotations() {
     }
   }
   return ann;
-}
-
-function readRegionFromShapes() {
-  const gd = document.getElementById('plot-current');
-  const shapes = (gd && gd.layout && gd.layout.shapes) || [];
-  const xs = [];
-  for (const s of shapes) {
-    if (s.type === 'line' && s.xref === 'x' && s.yref === 'paper' && s.x0 === s.x1) xs.push(s.x0);
-  }
-  xs.sort((a, b) => a - b);
-  regionBounds = xs.length ? [xs[0], xs[1] ?? null] : [null, null];
-  computeRegionStats();
 }
 
 function computeRegionStats() {
@@ -560,6 +570,8 @@ function resetPlots() {
 
   Plotly.react('plot-hist', [{ x: [], y: [], type: 'bar' }],
     themedLayout({ margin: { t: 16 }, xaxis: { title: 'Current (µA)' }, yaxis: { title: 'Samples' } }));
+  Plotly.react('plot-charge-dist', [{ x: [], y: [], type: 'bar' }],
+    themedLayout({ margin: { t: 16 }, xaxis: { title: 'Current (µA)' }, yaxis: { title: 'Portion of charge (%)', range: [0, 100], autorange: false } }));
   Plotly.react('plot-fft', [{ x: [], y: [], mode: 'lines', name: 'Spectrum' }],
     themedLayout({ margin: { t: 16 }, xaxis: { title: 'Frequency (Hz)' }, yaxis: { title: 'Mag (µA)', type: 'log' } }));
 }
@@ -604,6 +616,7 @@ setInterval(() => {
   renderLiveStats();
   if (tick % 5 === 0) renderCq();
   if (tick % 5 === 0) renderHistogram();
+  if (tick % 5 === 0) renderChargeDist();
   if (tick % 20 === 0) renderFft();
 }, FLUSH_MS);
 
@@ -637,6 +650,7 @@ function resetData() {
 
   regionActive = false;
   regionBounds = [null, null];
+  pendingRegion = 0;
   const regionBtn = document.getElementById('regionBtn');
   if (regionBtn) { regionBtn.classList.remove('active'); regionBtn.textContent = 'Region Cursors'; }
   if (regionStatsEl) regionStatsEl.textContent = '';
@@ -778,9 +792,12 @@ document.addEventListener('DOMContentLoaded', () => {
     themeToggle.textContent = dark ? 'Light' : 'Dark';
     try { localStorage.setItem('metashunt-theme', dark ? 'dark' : 'light'); } catch (e) {}
     // Re-render charts so Plotly follows the theme colors.
+    // renderWindow/renderMemory return early on empty data, so for an
+    // idle/empty state fall back to resetPlots (which re-themes the shells).
     if (isViewingMemory && curRows.length) renderMemory();
     else if (liveX.length) { needsUpdate = false; renderWindow(); }
-    renderCq(); renderHistogram(); renderFft();
+    else resetPlots();
+    renderCq(); renderHistogram(); renderChargeDist(); renderFft();
   };
   themeToggle.addEventListener('click', () => {
     const dark = document.documentElement.getAttribute('data-theme') === 'dark';
@@ -864,6 +881,16 @@ document.addEventListener('DOMContentLoaded', () => {
     yaxis: { title: 'Mag (µA)', type: 'log' }
   }), { displaylogo: false, responsive: true });
 
+  Plotly.newPlot('plot-charge-dist', [{
+    x: [], y: [], type: 'bar',
+    marker: { color: '#14b8a6', line: { width: 0 } },
+    name: 'Charge share'
+  }], themedLayout({
+    margin: { t: 16 },
+    xaxis: { title: 'Current (µA)' },
+    yaxis: { title: 'Portion of charge (%)', range: [0, 100], autorange: false }
+  }), { displaylogo: false, responsive: true });
+
   /* -------------------- START / STOP -------------------- */
 
   startBtn.addEventListener('click', async () => {
@@ -900,18 +927,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* -------------------- ANALYSIS CONTROLS -------------------- */
 
-  const thresholdInput = document.getElementById('thresholdUA');
   const batteryInput  = document.getElementById('batteryMah');
   const regionBtn     = document.getElementById('regionBtn');
 
-  thresholdInput.addEventListener('change', () => {
-    cfg.thresholdUA = parseFloat(thresholdInput.value) || 0;
-    refreshPlots();
-  });
-  thresholdInput.addEventListener('input', () => {
-    cfg.thresholdUA = parseFloat(thresholdInput.value) || 0;
-    refreshPlots();
-  });
   batteryInput.addEventListener('change', () => {
     cfg.batteryMah = parseFloat(batteryInput.value) || 0;
     renderLiveStats();
@@ -919,15 +937,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function setRegion(enabled) {
     regionActive = enabled;
+    pendingRegion = enabled ? 1 : 0;  // await first click
     if (enabled) {
-      const latest = liveX.length ? liveX[liveX.length - 1] : 1;
-      regionBounds = [0, Math.max(0.001, latest)];
+      regionBounds = [null, null];    // start empty; user clicks to place
     } else {
       regionBounds = [null, null];
     }
     regionBtn.classList.toggle('active', enabled);
-    regionBtn.textContent = enabled ? 'Region: drag cursors' : 'Region Cursors';
-    regionStatsEl.textContent = enabled ? 'Drag the two blue cursors' : '';
+    regionBtn.textContent = enabled ? 'Region: click 2 points' : 'Region Cursors';
+    regionStatsEl.textContent = enabled ? 'Click first boundary on the plot' : '';
     refreshPlots();
   }
   regionBtn.addEventListener('click', () => setRegion(!regionActive));
@@ -940,44 +958,84 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Respond to cursor dragging on the current plot
-  document.getElementById('plot-current').on('plotly_relayout', readRegionFromShapes);
+  // Click-to-place region handled in the MANUAL LABELS block below
+  // (single plotly_click listener manages both regions and labels).
 
-  /* -------------------- MANUAL LABELS (8a / 8b) -------------------- */
+  /* -------------------- MANUAL LABELS (8a) -------------------- */
 
-  const labelText = document.getElementById('labelText');
-  const addLabelBtn = document.getElementById('addLabelBtn');
   const setRegionLabelBtn = document.getElementById('setRegionLabelBtn');
   const clearLabelsBtn = document.getElementById('clearLabelsBtn');
 
-  // Capture where the user clicked so "Add Label" can anchor there.
-  document.getElementById('plot-current').on('plotly_click', (e) => {
-    const pt = e.points && e.points[0];
-    if (pt && pt.x !== undefined) lastClickT = pt.x;
+  // Inline popover anchored at the click point.
+  const popover = document.getElementById('labelPopover');
+  const popoverText = document.getElementById('labelPopoverText');
+  const popoverAdd = document.getElementById('labelPopoverAdd');
+  const popoverCancel = document.getElementById('labelPopoverCancel');
+  let popoverAnchor = { x: 0, y: 0 };   // data coords the label is anchored to
+
+  function showPopover(px, py, x, y) {
+    popover.style.display = 'flex';
+    const xoff = popover.offsetWidth / 2;
+    const yoff = popover.offsetHeight + 8;
+    popover.style.left = Math.max(8, Math.min(window.innerWidth - popover.offsetWidth - 8, px - xoff)) + 'px';
+    popover.style.top = Math.max(8, py - yoff) + 'px';
+    popoverAnchor = { x, y };
+    popoverText.value = '';
+    popoverText.focus();
+  }
+  function closePopover() { popover.style.display = 'none'; }
+  function submitPopover() {
+    const text = popoverText.value.trim();
+    if (text && popoverAnchor) {
+      notes.push({ id: Date.now(), t: popoverAnchor.x, y: popoverAnchor.y, text, color: theme().text });
+      refreshPlots();
+    }
+    closePopover();
+  }
+
+  popoverAdd.addEventListener('click', submitPopover);
+  popoverCancel.addEventListener('click', closePopover);
+  popoverText.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submitPopover();
+    else if (e.key === 'Escape') closePopover();
   });
 
-  addLabelBtn.addEventListener('click', () => {
-    const text = labelText.value.trim();
-    if (!text) return alert('Enter label text first');
-    // Anchor at last click, else the visible window center, else 0.
-    let t = lastClickT;
-    if (t === null || t === undefined) {
-      t = liveX.length ? (liveX[liveX.length - 1] + (liveX[0] || 0)) / 2 : 0;
+  // Label flow: click the plot (when region inactive) opens an inline label
+  // popover at the anchor, instead of a dislocated top-panel input.
+  document.getElementById('plot-current').on('plotly_click', (e) => {
+    const pt = e.points && e.points[0];
+    const x = pt && pt.x !== undefined ? pt.x : null;
+    const y = pt && pt.y !== undefined ? pt.y : null;
+
+    if (regionActive) {
+      // --- Region placement ---
+      if (pendingRegion === 1 && x !== null) {
+        regionBounds = [x, null];
+        pendingRegion = 2;
+        regionStatsEl.textContent = 'Now click the end boundary on the plot';
+        refreshPlots();
+      } else if (pendingRegion === 2 && x !== null) {
+        regionBounds = [Math.min(regionBounds[0], x), Math.max(regionBounds[0], x)];
+        pendingRegion = 0;
+        computeRegionStats();
+        refreshPlots();
+      }
+      return;
     }
-    // Use current measurement value at that time as the y anchor.
-    let y = null;
-    if (liveY.length) y = liveY[liveY.length - 1];
-    notes.push({ id: Date.now(), t, y, text, color: '#0f172a' });
-    labelText.value = '';
-    refreshPlots();
+
+    // --- General click: open label popover ---
+    const evt = e.event || {};
+    const px = evt.clientX != null ? evt.clientX : (pt && pt.x) || 0;
+    const py = evt.clientY != null ? evt.clientY : (pt && pt.y) || 0;
+    closePopover();
+    if (x !== null) showPopover(px, py, x, y);
   });
 
   setRegionLabelBtn.addEventListener('click', () => {
-    const text = labelText.value.trim();
-    if (!regionActive) return alert('Enable Region Cursors first');
-    if (!text) return alert('Enter a label first');
-    regionLabel = text;
-    labelText.value = '';
+    if (!regionActive) return alert('Enable Region Cursors first, then Set Region Caption');
+    // Prompt modestly for the caption.
+    regionLabel = prompt('Region caption:', regionLabel || '');
+    if (regionLabel === null) regionLabel = '';
     refreshPlots();
   });
 

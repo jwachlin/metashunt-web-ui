@@ -15,7 +15,6 @@
   /* Semantic accents */
   --acc: #0ea5e9;
   --acc-soft: rgba(14,165,233,0.12);
-  --threshold: #ef4444;
   --ok: #16a34a;
 
   /* Surface tints */
@@ -43,7 +42,6 @@
 
   --acc: #38bdf8;
   --acc-soft: rgba(56,189,248,0.16);
-  --threshold: #f87171;
   --ok: #4ade80;
 
   --data-bg: #10131a;
@@ -260,12 +258,39 @@ button.active { background: var(--acc); color: #fff; border-color: transparent; 
   font-variant-numeric: tabular-nums;
 }
 .stat-pill b { color: var(--text); font-weight: 600; }
-.stat-pill.viol {
-  background: color-mix(in srgb, var(--threshold) 15%, var(--card));
-  border-color: var(--threshold);
-  color: var(--threshold); font-weight: 600;
-}
 .stat-region {
   margin-left: auto; font-size: 12px; color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+
+/* -------------------- LABEL POPOVER -------------------- */
+
+.label-popover {
+  position: fixed;
+  z-index: 50;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.18);
+}
+.label-popover input {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: var(--card);
+  color: var(--text);
+  width: 200px;
+  font-size: 13px;
+}
+.label-popover input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+.label-popover button {
+  box-shadow: none;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+.label-popover button:first-of-type { color: #fff; background: var(--primary); border-color: transparent; }
+.label-popover button:last-of-type { padding: 6px 8px; }
