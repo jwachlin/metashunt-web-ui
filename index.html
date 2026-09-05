@@ -116,6 +116,24 @@
     </div>
 
     <div class="ctrl-section">
+      <h4 class="ctrl-title">Device Model</h4>
+      <div class="row" id="modelPlaceholder">
+        <button id="addModelBtn" class="ghost">Add Device Model</button>
+        <button id="loadModelBtn" class="ghost">Load Device Model</button>
+        <div class="spacer"></div>
+      </div>
+      <div id="modelArea" style="display:none">
+        <div id="modelStatus" class="model-status"></div>
+        <div id="modelForm"></div>
+        <div class="row" style="margin-top:10px;">
+          <button id="generateModelBtn" class="primary small">Generate Model</button>
+          <button id="exportModelBtn" class="export small">Export Model</button>
+          <button id="clearModelBtn" class="danger small">Remove Model</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="ctrl-section">
       <h4 class="ctrl-title">Imported Logs</h4>
       <div id="logsPanel"></div>
     </div>

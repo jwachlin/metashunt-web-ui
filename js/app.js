@@ -1,5 +1,6 @@
 import { MetaShuntSerial } from './webSerial.js';
 import { SampleStore, Decimator } from './sampleStore.js';
+import { freshModel, parseModel, simulateModel } from './powerModel.js';
 
 /* -------------------- DOM -------------------- */
 
@@ -162,9 +163,336 @@ function logChargeTrace(log) {
 function csvCurrentTraces() { return csvLogs.map(logCurrentTrace); }
 function csvChargeTraces()  { return csvLogs.map(logChargeTrace); }
 
+/* -------------------- DEVICE MODEL OVERLAY -------------------- */
+
+const MODEL_COLOR = '#a855f7';      // purple, distinct from measurements
+let deviceModel = null;             // the editable model spec {battery, ...}
+let modelSim = null;                // { time[], current_uA[], charge_uAh[] } result
+
+function modelCurrentTraces() {
+  if (!modelSim || !deviceModel) return [];
+  return [{
+    x: modelSim.time,
+    y: modelSim.current_uA,
+    mode: 'lines',
+    name: `Model: ${deviceModel.name}`,
+    line: { color: MODEL_COLOR, dash: 'dash', width: 2 },
+    visible: true
+  }];
+}
+
+function modelChargeTraces() {
+  if (!modelSim || !deviceModel) return [];
+  return [{
+    x: modelSim.time,
+    y: modelSim.charge_uAh,
+    mode: 'lines',
+    name: `Model: ${deviceModel.name}`,
+    line: { color: MODEL_COLOR, dash: 'dash', width: 2 },
+    visible: true
+  }];
+}
+
+function generateModel() {
+  if (!deviceModel) return;
+  modelSim = simulateModel(deviceModel);
+  // Update status line
+  const st = document.getElementById('modelStatus');
+  if (st) {
+    const n = modelSim.time.length;
+    const dur = modelSim.time.length ? modelSim.time[modelSim.time.length - 1].toFixed(1) : 0;
+    st.textContent = `Generated ${n} pts over ${dur} s (dashed purple).`;
+  }
+  replotCsv();
+}
+
 function replotCsv() {
   if (isViewingMemory && curRows.length) renderMemory();
   else renderWindow();
+}
+
+/* -------------------- DEVICE MODEL BUILDER UI -------------------- */
+
+function mdlEl(tag, cls, text) {
+  const el = document.createElement(tag);
+  if (cls) el.className = cls;
+  if (text !== undefined) el.textContent = text;
+  return el;
+}
+
+function mdlInput(type, value, onInput) {
+  const inp = document.createElement('input');
+  inp.type = type;
+  inp.value = value;
+  inp.addEventListener('input', () => onInput(inp.value));
+  return inp;
+}
+
+// Number input clamped to a minimum (default 0 = non-negative).
+function mdlNum(value, min, onInput) {
+  const inp = mdlInput('number', value, v => onInput(parseFloat(v) || min));
+  inp.min = String(min);
+  inp.addEventListener('input', () => {
+    const v = parseFloat(inp.value);
+    if (Number.isFinite(v) && v < min) inp.value = String(min);
+  });
+  return inp;
+}
+
+function mdlSelect(options, value, onInput) {
+  const sel = document.createElement('select');
+  for (const { v, l } of options) {
+    const op = document.createElement('option');
+    op.value = v; op.textContent = l;
+    sel.appendChild(op);
+  }
+  sel.value = value;
+  sel.addEventListener('change', () => onInput(sel.value));
+  return sel;
+}
+
+function mdlField(label, control) {
+  const f = mdlEl('div', 'mdl-field');
+  const l = mdlEl('label', null, label);
+  f.append(l, control);
+  return f;
+}
+
+function buildComponentEditor(container, component, onCommit) {
+  const row = mdlEl('div', 'mdl-rep-row');
+  const name = mdlInput('text', component.name, v => { component.name = v; onCommit(); });
+  name.title = 'Component Name';
+  name.style.width = '120px';
+  const mode = mdlInput('text', component.mode_name, v => { component.mode_name = v; onCommit(); });
+  mode.title = 'Mode';
+  mode.style.width = '90px';
+  const curGroup = currentEditor(component, { onCommit });
+  const cur = curGroup.input, unitSel = curGroup.unitSel;
+  row.append(mdlEl('span', 'log-label', 'Name'), name);
+  row.append(mdlEl('span', 'log-label', 'Mode'), mode);
+  row.append(mdlEl('span', 'log-label', 'Current'), cur, unitSel);
+  container.appendChild(row);
+}
+
+// Shared 'current' editor: number input + nA/µA/mA dropdown. Stores mA in the
+// model object (core always mA; unit is a UI-editing convenience, default µA).
+const CURRENT_UNITS = [
+  { v: 'nA', l: 'nA', mult: 0.000001 },
+  { v: 'µA', l: 'µA', mult: 0.001 },
+  { v: 'mA', l: 'mA', mult: 1 }
+];
+
+function currentEditor(obj, opts = {}) {
+  // By default edits obj.current_ma (components). For the regulator, opts can
+  // map to a different mA field: { get: () => reg.quiescent_current_ma, set: v => ... }.
+  const onCommit = opts.onCommit || (() => {});
+  const getMa = opts.get ? opts.get : () => (typeof obj.current_ma === 'number' ? obj.current_ma : 0);
+  const setMa = opts.set ? opts.set : (v) => { obj.current_ma = v; };
+
+  const baseMa = getMa();
+  // Default display unit is µA (user asked), only switch to an explicit stored unit if present.
+  const unit = obj._displayUnit || 'µA';
+  const mult = CURRENT_UNITS.find(u => u.v === unit).mult;
+
+  const input = mdlNum(baseMa / mult, 0, v => {
+    const m = CURRENT_UNITS.find(u => u.v === unitSel.value).mult;
+    setMa(Math.max(0, v) * m);
+    obj._displayUnit = unitSel.value;
+    onCommit();
+  });
+  input.title = 'Current';
+  input.style.width = '80px';
+
+  const unitSel = mdlSelect(CURRENT_UNITS, unit, v => {
+    const newMult = CURRENT_UNITS.find(u => u.v === v).mult;
+    // Reinterpret the typed number in the new unit (keep the display number).
+    const shown = parseFloat(input.value);
+    if (Number.isFinite(shown)) setMa(shown * newMult);
+    obj._displayUnit = v;
+    onCommit();
+  });
+  unitSel.title = 'Unit';
+  unitSel.style.width = '58px';
+
+  return { input, unitSel };
+}
+
+function buildStageEditor(container, stage, onCommit, onAddComponent, onRemoveComponent) {
+  const block = mdlEl('div', 'mdl-block');
+  const hdr = mdlEl('div', 'mdl-block-title');
+  const name = mdlInput('text', stage.name || 'Stage', v => { stage.name = v; onCommit(); });
+  name.title = 'Stage Name'; name.style.width = '120px';
+  const dur = mdlNum(stage.delta_t_sec, 0.000001, v => {
+    stage.delta_t_sec = Math.max(1e-6, v || 0.001);
+    onCommit();
+  });
+  dur.title = 'Duration (s)'; dur.style.width = '70px';
+  const addC = mdlEl('button', 'mdl-add', '+ Add Component');
+  addC.addEventListener('click', () => onAddComponent());
+  hdr.append(name, dur, mdlEl('span', null, 's'), addC);
+  block.appendChild(hdr);
+  const comps = mdlEl('div', null);
+  block.appendChild(comps);
+  stage.components.forEach((c, i) => {
+    buildComponentEditor(comps, c, onCommit);
+    const rm = mdlEl('button', 'mdl-btn mdl-remove', '✕');
+    rm.title = 'Remove Component';
+    rm.style.marginLeft = '4px';
+    rm.addEventListener('click', () => onRemoveComponent(i));
+    comps.lastElementChild.appendChild(rm);
+  });
+  container.appendChild(block);
+}
+
+// New stage for a thread: deep-copies the previous stage's components (names,
+// modes, currents) so repeated stages are quick to set up.
+function cloneStageFrom(lastStage) {
+  const src = lastStage || { components: [] };
+  return {
+    name: (src.name || 'Stage'),
+    delta_t_sec: typeof src.delta_t_sec === 'number' ? src.delta_t_sec : 1.0,
+    components: src.components.map(c => ({
+      name: c.name || 'Component',
+      mode_name: c.mode_name || 'Active',
+      current_ma: c.current_ma || 0
+    }))
+  };
+}
+
+function buildThreadEditor(container, thread, onCommit, onAddStage, onRemove) {
+  const block = mdlEl('div', 'mdl-block');
+  const hdr = mdlEl('div', 'mdl-block-title');
+  const name = mdlInput('text', thread.name, v => { thread.name = v; onCommit(); });
+  name.title = 'Thread Name'; name.style.width = '140px';
+  const addS = mdlEl('button', 'mdl-add', '+ Add Stage');
+  addS.addEventListener('click', () => onAddStage());
+  const rm = mdlEl('button', 'mdl-btn mdl-remove', '✕ Thread');
+  rm.addEventListener('click', () => onRemove());
+  hdr.append(name, addS, rm);
+  block.appendChild(hdr);
+  const stages = mdlEl('div', 'mdl-inner');
+  block.appendChild(stages);
+  thread.stages.forEach((s, si) => buildStageEditor(stages, s, onCommit,
+    () => {
+      thread.stages[si].components.push({ name: 'Component', mode_name: 'Active', current_ma: 1.0 });
+      renderModelForm();
+    },
+    (ci) => {
+      thread.stages[si].components.splice(ci, 1);
+      renderModelForm();
+    }
+  ));
+  container.appendChild(block);
+}
+
+function renderModelForm() {
+  const form = document.getElementById('modelForm');
+  const m = deviceModel;
+  if (!m || !form) return;
+  form.innerHTML = '';
+  const commit = () => { /* no full re-render needed; model holds references */ };
+
+  const root = mdlEl('div', null);
+
+  // System
+  const sysBlock = mdlEl('div', 'mdl-block');
+  sysBlock.appendChild(mdlEl('div', 'mdl-block-title', 'System'));
+  const sysGrid = mdlEl('div', 'mdl-grid');
+  sysGrid.append(
+    mdlField('Name', mdlInput('text', m.name, v => { m.name = v; })),
+    mdlField('Sim Time (s)', mdlNum(m.sim_time_sec, 0.001, v => { m.sim_time_sec = Math.max(0.001, v || 0.001); }))
+  );
+  sysBlock.appendChild(sysGrid);
+  root.appendChild(sysBlock);
+
+  // Battery
+  const b = m.battery;
+  const batBlock = mdlEl('div', 'mdl-block');
+  batBlock.appendChild(mdlEl('div', 'mdl-block-title', 'Battery'));
+  const batGrid = mdlEl('div', 'mdl-grid');
+  batGrid.append(
+    mdlField('Name', mdlInput('text', b.name, v => { b.name = v; })),
+    mdlField('Chemistry', mdlSelect([{ v: 'li-ion', l: 'Li-Ion' }, { v: 'coin-cell', l: 'Coin Cell' }], b.type, v => { b.type = v; })),
+    mdlField('Cells', mdlNum(b.number_cells, 1, v => { b.number_cells = Math.max(1, parseInt(v) || 1); })),
+    mdlField('Capacity (mAh)', mdlNum(b.capacity_mAh, 0, v => { b.capacity_mAh = Math.max(0, v || 0); })),
+    mdlField('Initial Charge (mAh)', mdlNum(b.initial_charge_mAh, 0, v => { b.initial_charge_mAh = Math.max(0, v || 0); })),
+    mdlField('Internal R (Ω)', mdlNum(b.internal_resistance_ohm, 0, v => { b.internal_resistance_ohm = Math.max(0, v || 0); }))
+  );
+  batBlock.appendChild(batGrid);
+  root.appendChild(batBlock);
+
+  // Regulator
+  const reg = b.regulator;
+  const regBlock = mdlEl('div', 'mdl-block');
+  regBlock.appendChild(mdlEl('div', 'mdl-block-title', 'Regulator'));
+  const regGrid = mdlEl('div', 'mdl-grid');
+
+  const effField = mdlField('Efficiency (0-1)', mdlNum(reg.efficiency, 0.001, v => { reg.efficiency = Math.min(1, Math.max(0.001, v || 0.001)); }));
+
+  const typeSel = mdlSelect([{ v: 'switching', l: 'Switching' }, { v: 'linear', l: 'Linear' }],
+    reg.is_switching ? 'switching' : 'linear',
+    v => {
+      reg.is_switching = v === 'switching';
+      if (!reg.is_switching) reg.efficiency = 0;        // linear regs ignore efficiency
+      renderModelForm();
+    });
+
+  function syncRegEfficiency() {
+    effField.style.display = reg.is_switching ? '' : 'none';
+  }
+
+  // Quiescent current: number + nA/µA/mA dropdown (stores mA in core field).
+  const qGroup = currentEditor(reg, {
+    get: () => (typeof reg.quiescent_current_ma === 'number' ? reg.quiescent_current_ma : 0),
+    set: v => { reg.quiescent_current_ma = v; },
+    onCommit: () => {}
+  });
+
+  const qField = mdlEl('div', 'mdl-field');
+  const qLabel = mdlEl('label', null, 'Quiescent');
+  const qRow = mdlEl('div', 'mdl-rep-row');
+  qRow.style.flexWrap = 'nowrap';
+  qRow.style.gap = '4px';
+  qRow.append(qGroup.input, qGroup.unitSel);
+  qField.append(qLabel, qRow);
+
+  regGrid.append(
+    mdlField('Name', mdlInput('text', reg.name, v => { reg.name = v; })),
+    mdlField('Output Voltage (V)', mdlNum(reg.output_voltage, 0, v => { reg.output_voltage = Math.max(0, v || 0); })),
+    mdlField('Type', typeSel),
+    effField,
+    qField
+  );
+  syncRegEfficiency();
+  regBlock.appendChild(regGrid);
+  root.appendChild(regBlock);
+
+  // Threads
+  const thrBlock = mdlEl('div', 'mdl-block');
+  const thrHdr = mdlEl('div', 'mdl-block-title');
+  thrHdr.append(mdlEl('span', null, 'Threads'));
+  const addT = mdlEl('button', 'mdl-add', '+ Add Thread');
+  addT.addEventListener('click', () => {
+    b.regulator.threads.push({ name: `Thread ${b.regulator.threads.length + 1}`, stages: [{ name: 'Stage', delta_t_sec: 1.0, components: [{ name: 'Component', mode_name: 'Active', current_ma: 1.0 }] }] });
+    renderModelForm();
+  });
+  thrHdr.appendChild(addT);
+  thrBlock.appendChild(thrHdr);
+  const threadsDiv = mdlEl('div', 'mdl-inner');
+  thrBlock.appendChild(threadsDiv);
+  b.regulator.threads.forEach((th, i) => buildThreadEditor(threadsDiv, th, commit,
+    () => {
+      th.stages.push(cloneStageFrom(th.stages[th.stages.length - 1]));
+      renderModelForm();
+    },
+    () => {
+      b.regulator.threads.splice(i, 1);
+      renderModelForm();
+    }
+  ));
+  root.appendChild(thrBlock);
+
+  form.appendChild(root);
 }
 
 /* -------------------- IMPORTED LOG LIST UI -------------------- */
@@ -1018,12 +1346,14 @@ function renderPrimaryPair(xaxis) {
   const themedX = themedLayout({ margin: { t: 16 }, xaxis, yaxis: yAxisCurrent() });
   Plotly.react('plot-current', [
     { x: [...liveX], y: [...liveY], mode: 'lines', name: 'Live Current' },
-    ...csvCurrentTraces()
+    ...csvCurrentTraces(),
+    ...modelCurrentTraces()
   ], { ...themedX, shapes: currentShapes('plot-current'), annotations: currentAnnotations() });
 
   Plotly.react('plot-charge', [
     { x: [...liveQX], y: [...liveQY], mode: 'lines', name: 'Live Charge' },
-    ...csvChargeTraces()
+    ...csvChargeTraces(),
+    ...modelChargeTraces()
   ], themedLayout({
     margin: { t: 16 },
     dragmode: false,
@@ -1048,12 +1378,14 @@ function resetPlots() {
 
   Plotly.react('plot-current', [
     { x: [], y: [], mode: 'lines', name: 'Live Current' },
-    ...csvCurrentTraces()
+    ...csvCurrentTraces(),
+    ...modelCurrentTraces()
   ], themedLayout({ ...layoutResetCurrent, shapes: currentShapes('plot-current'), annotations: currentAnnotations() }));
 
   Plotly.react('plot-charge', [
     { x: [], y: [], mode: 'lines', name: 'Live Charge' },
-    ...csvChargeTraces()
+    ...csvChargeTraces(),
+    ...modelChargeTraces()
   ], themedLayout({ ...layoutResetCharge, shapes: currentShapes('plot-charge') }));
 
   Plotly.react('plot-hist', [{ x: [], y: [], type: 'bar' }],
@@ -1082,11 +1414,13 @@ function renderMemory() {
     const emptyX = { title: 'Time (s)', range: visibleRange, autorange: false };
     Plotly.react('plot-current', [
       { x: [], y: [], mode: 'lines', name: 'Live Current' },
-      ...csvCurrentTraces()
+      ...csvCurrentTraces(),
+      ...modelCurrentTraces()
     ], themedLayout({ margin: { t: 16 }, xaxis: emptyX, yaxis: yAxisCurrent() }));
     Plotly.react('plot-charge', [
       { x: [], y: [], mode: 'lines', name: 'Live Charge' },
-      ...csvChargeTraces()
+      ...csvChargeTraces(),
+      ...modelChargeTraces()
     ], themedLayout({ margin: { t: 16 }, dragmode: false, xaxis: emptyX, yaxis: { title: 'Charge (µAh)', autorange: true } }));
     renderAnalysisPlots();
     return;
@@ -1111,12 +1445,14 @@ function renderMemory() {
 
   Plotly.react('plot-current', [
     { x: cur.x, y: cur.y, mode: 'lines', name: 'Live Current' },
-    ...csvCurrentTraces()
+    ...csvCurrentTraces(),
+    ...modelCurrentTraces()
   ], themedLayout({ margin: { t: 16 }, xaxis, yaxis: yAxisCurrent(), shapes: currentShapes('plot-current'), annotations: currentAnnotations() }));
 
   Plotly.react('plot-charge', [
     { x: chr.x, y: chr.y, mode: 'lines', name: 'Live Charge' },
-    ...csvChargeTraces()
+    ...csvChargeTraces(),
+    ...modelChargeTraces()
   ], themedLayout({ margin: { t: 16 }, dragmode: false, xaxis, yaxis: { title: 'Charge (µAh)', autorange: true }, shapes: currentShapes('plot-charge') }));
 
   renderAnalysisPlots();
@@ -1368,6 +1704,69 @@ document.addEventListener('DOMContentLoaded', () => {
   const stopBtn = document.getElementById('stopBtn');
 
   burstHz.min = 500; // hardware is 500 Hz-quantized
+
+  /* -------------------- DEVICE MODEL BUTTONS -------------------- */
+
+  const addModelBtn = document.getElementById('addModelBtn');
+  const loadModelBtn = document.getElementById('loadModelBtn');
+  const generateModelBtn = document.getElementById('generateModelBtn');
+  const exportModelBtn = document.getElementById('exportModelBtn');
+  const clearModelBtn = document.getElementById('clearModelBtn');
+  const modelPlaceholder = document.getElementById('modelPlaceholder');
+  const modelArea = document.getElementById('modelArea');
+
+  function openModelForm() {
+    modelArea.style.display = '';
+    modelPlaceholder.style.display = 'none';
+    renderModelForm();
+  }
+  function closeModelForm() {
+    deviceModel = null;
+    modelSim = null;
+    modelArea.style.display = 'none';
+    modelPlaceholder.style.display = '';
+    replotCsv();
+  }
+
+  addModelBtn.addEventListener('click', () => {
+    deviceModel = freshModel();
+    openModelForm();
+    generateModel();
+  });
+
+  loadModelBtn.addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.onchange = async () => {
+      const file = input.files[0];
+      if (!file) return;
+      const text = await file.text();
+      const res = parseModel(text);
+      if (!res.ok) {
+        alert(`Could not load device model:\n${res.error}`);
+        return;
+      }
+      deviceModel = res.model;
+      openModelForm();
+      generateModel();
+    };
+    input.click();
+  });
+
+  generateModelBtn.addEventListener('click', generateModel);
+
+  exportModelBtn.addEventListener('click', () => {
+    if (!deviceModel) return;
+    // Strip ephemeral UI-only keys (_displayUnit) so the exported JSON is the
+    // clean mA-core model spec.
+    const strip = (k, v) => (k === '_displayUnit' ? undefined : v);
+    const blob = new Blob([JSON.stringify(deviceModel, strip, 2)], { type: 'application/json' });
+    const safeName = (deviceModel.name || 'device-model').replace(/[^\w.-]+/g, '_');
+    download(blob, `${safeName}.json`);
+  });
+
+  clearModelBtn.addEventListener('click', closeModelForm);
 
   /* -------------------- DECIMATION CONTROLS -------------------- */
 
