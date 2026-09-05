@@ -1152,18 +1152,44 @@ function captureXRange(gdId) {
       rangeLock = false;
     }
   }
+  renderLiveStats();
   scheduleAnalysis();
 }
 
+// Current samples currently visible in the Current vs Time window.
+function visibleView() {
+  if (typeof visibleRange !== 'undefined' && visibleRange) {
+    const lo = visibleRange[0], hi = visibleRange[1];
+    const out = [];
+    if (liveX.length) {
+      for (let i = 0; i < liveX.length; i++) {
+        const t = liveX[i];
+        if (t >= lo && t <= hi) out.push(liveY[i]);
+      }
+    }
+    if (curRows.length) {
+      for (let i = 0; i < curRows.length; i++) {
+        const t = curRows.t[i];
+        if (t >= lo && t <= hi) out.push(curRows.i[i]);
+      }
+    }
+    return out;
+  }
+  return liveY;  // no zoom: show the live 10s window
+}
+
 function renderLiveStats() {
-  const s = basicStats(liveY);
-  if (!s) return;
-  stAvg.textContent = fmt(s.avg);
-  stMin.textContent = fmt(s.min);
-  stMax.textContent = fmt(s.max);
-  stSd.textContent = fmt(s.sd, 2);
-  const charge = liveQY.length ? liveQY[liveQY.length - 1] : 0;
-  stCharge.textContent = fmt(charge, 2);
+  // Avg/Min/Max/Std. Dev. reflect the Current vs Time view (visible x-range).
+  // Show "--" when there is no valid data within the view.
+  const s = basicStats(visibleView());
+  stAvg.textContent = s ? fmt(s.avg) : '--';
+  stMin.textContent = s ? fmt(s.min) : '--';
+  stMax.textContent = s ? fmt(s.max) : '--';
+  stSd.textContent = s ? fmt(s.sd, 2) : '--';
+
+  // Charge is over the WHOLE dataset (cumulative from retained history).
+  const wholeCharge = curRows.length ? curRows.q[curRows.length - 1] : 0;
+  stCharge.textContent = fmt(wholeCharge, 2);
 
   // Realtime current (last sample), auto-scaled units.
   if (liveY.length > 0) {
@@ -1178,9 +1204,10 @@ function renderLiveStats() {
     stLiveVal.parentElement.classList.remove('live--on');
   }
 
-  // Battery life estimate
-  if (cfg.batteryMah > 0 && s.avg > 0) {
-    const hours = (cfg.batteryMah * 1000) / s.avg; // mAh / mA
+  // Predicted battery life uses the WHOLE-dataset average current.
+  const wholeAvg = curRows.length ? curRows.i.reduce((a, v) => a + v, 0) / curRows.length : 0;
+  if (cfg.batteryMah > 0 && wholeAvg > 0) {
+    const hours = (cfg.batteryMah * 1000) / wholeAvg; // mAh / mA
     stBatt.textContent = hours >= 24 ? `${(hours / 24).toFixed(1)} d` : `${hours.toFixed(1)} h`;
   } else {
     stBatt.textContent = '--';
@@ -1282,14 +1309,14 @@ function currentAnnotations() {
       font: { color: n.color || theme().text, size: 12 }
     });
   }
-  // Named region caption
+  // Named region caption (placed just inside the top edge so it is always visible)
   if (regionActive && regionLabel) {
     const [lo, hi] = regionBounds;
     if (lo !== null && hi !== null && hi > lo) {
       ann.push({
         text: regionLabel, xref: 'x', x: (lo + hi) / 2,
-        yref: 'paper', y: 1.05, showarrow: false,
-        xanchor: 'center', yanchor: 'bottom',
+        yref: 'paper', y: 0.985, showarrow: false,
+        xanchor: 'center', yanchor: 'top',
         font: { color: '#0ea5e9', size: 14, weight: 600 }
       });
     }
@@ -1297,35 +1324,10 @@ function currentAnnotations() {
   return ann;
 }
 
+// Region statistics text was removed by request; this is now a no-op kept for
+// call-site compatibility (placement prompts still come from regionStatsEl).
 function computeRegionStats() {
-  const [lo, hi] = regionBounds;
-  if (!regionActive || lo === null || hi === null || lo >= hi) {
-    regionStatsEl.textContent = '';
-    return;
-  }
-  if (!curRows.length) {
-    regionStatsEl.textContent = 'No Data';
-    return;
-  }
-  // curRows is sorted ascending by t; scan the window
-  let n = 0, sum = 0, sumSq = 0, min = Infinity, max = -Infinity, prevT = null, charge = 0;
-  const T = curRows.t, I = curRows.i;
-  for (let idx = 0; idx < curRows.length; idx++) {
-    const tt = T[idx];
-    if (tt < lo) { prevT = tt; continue; }
-    if (tt > hi) break;
-    const v = I[idx];
-    n++; sum += v; sumSq += v * v;
-    if (v < min) min = v;
-    if (v > max) max = v;
-    if (prevT !== null) charge += v * (tt - prevT) / 3600.0;
-    prevT = tt;
-  }
-  if (!n) { regionStatsEl.textContent = 'No Data in Region'; return; }
-  const avg = sum / n;
-  const sd = Math.sqrt(Math.max(0, sumSq / n - avg * avg));
-  regionStatsEl.textContent =
-    `Region [${lo.toFixed(2)}–${hi.toFixed(2)}s]  avg=${fmt(avg)} µA · min=${fmt(min)} · max=${fmt(max)} · std=${fmt(sd)} · ΔQ=${fmt(charge)} µAh`;
+  if (regionStatsEl) regionStatsEl.textContent = '';
 }
 
 /* -------------------- PLOT RENDERING -------------------- */
@@ -1580,7 +1582,7 @@ function resetData() {
   regionBounds = [null, null];
   pendingRegion = 0;
   const regionBtn = document.getElementById('regionBtn');
-  if (regionBtn) { regionBtn.classList.remove('active'); regionBtn.textContent = 'Region Cursors'; }
+  if (regionBtn) { regionBtn.classList.remove('active'); regionBtn.textContent = 'Add Region Cursors'; }
   if (regionStatsEl) regionStatsEl.textContent = '';
 
   updateDecimStats();
@@ -1872,15 +1874,6 @@ document.addEventListener('DOMContentLoaded', () => {
   try { savedTheme = localStorage.getItem('metashunt-theme'); } catch (e) {}
   applyTheme(savedTheme === 'dark');
 
-  /* -------------------- LABELS COLLAPSE -------------------- */
-
-  const labelsPanel = document.getElementById('labelsPanel');
-  const collapseLabelsBtn = document.getElementById('collapseLabelsBtn');
-  collapseLabelsBtn.addEventListener('click', () => {
-    const open = labelsPanel.classList.toggle('open');
-    collapseLabelsBtn.textContent = open ? 'Labels ▴' : 'Labels ▾';
-  });
-
   // Generic section collapsibles (Data & Analysis, Device Model).
   document.querySelectorAll('.ctrl-collapse[data-target]').forEach(btn => {
     const bodyId = btn.dataset.target;
@@ -2043,7 +2036,7 @@ document.addEventListener('DOMContentLoaded', () => {
       regionBounds = [null, null];
     }
     regionBtn.classList.toggle('active', enabled);
-    regionBtn.textContent = enabled ? 'Region: Click 2 Points' : 'Region Cursors';
+    regionBtn.textContent = enabled ? 'Region: Click 2 Points' : 'Add Region Cursors';
     regionStatsEl.textContent = enabled ? 'Click First Boundary on the Plot' : '';
     refreshPlots();
   }
@@ -2054,7 +2047,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* -------------------- MANUAL LABELS (8a) -------------------- */
 
-  const setRegionLabelBtn = document.getElementById('setRegionLabelBtn');
   const clearLabelsBtn = document.getElementById('clearLabelsBtn');
 
   // Inline popover anchored at the click point.
@@ -2107,45 +2099,10 @@ document.addEventListener('DOMContentLoaded', () => {
       setVisibleRange(null);
       visibleYRange = null;
       refreshPlots();
+      renderLiveStats();
     } finally { rangeLock = false; }
     scheduleAnalysis();
   });
-
-  /* -------------------- HOVER READOUT (B4) -------------------- */
-
-  const hoverReadout = document.getElementById('hoverReadout');
-
-  function hoverStatsFor(ys) {
-    return basicStats(ys);
-  }
-
-  function updateHoverReadout(ptX, ptY, kind) {
-    if (!hoverReadout) return;
-    // Snapshot of the hovered point plus min/max/avg over the live window.
-    let html = '';
-    if (ptX !== null && ptX !== undefined) html += `t=<b>${Number(ptX).toFixed(3)}s</b> `;
-    if (ptY !== null && ptY !== undefined) html += ` <b>${formatCurrent(ptY)}</b>`;
-    const s = hoverStatsFor(liveY);
-    if (s) {
-      html += ` &nbsp;·&nbsp; win avg=<b>${fmt(s.avg)}µA</b> min=<b>${fmt(s.min)}µA</b> max=<b>${fmt(s.max)}µA</b>`;
-    }
-    hoverReadout.innerHTML = html || '';
-    hoverReadout.style.display = html ? '' : 'none';
-  }
-
-  function onPlotHover(e) {
-    const pt = e.points && e.points[0];
-    if (!pt) return;
-    updateHoverReadout(pt.x, pt.y, pt.fullData && pt.fullData.name);
-  }
-  function onPlotUnhover() {
-    if (hoverReadout) hoverReadout.style.display = 'none';
-  }
-
-  document.getElementById('plot-current').on('plotly_hover', onPlotHover);
-  document.getElementById('plot-current').on('plotly_unhover', onPlotUnhover);
-  document.getElementById('plot-charge').on('plotly_hover', onPlotHover);
-  document.getElementById('plot-charge').on('plotly_unhover', onPlotUnhover);
 
   // Label flow: click the plot (when region inactive) opens an inline label
   // popover at the anchor, instead of a dislocated top-panel input.
@@ -2154,8 +2111,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const x = pt && pt.x !== undefined ? pt.x : null;
     const y = pt && pt.y !== undefined ? pt.y : null;
 
-    if (regionActive) {
-      // --- Region placement ---
+    // Only intercept clicks for region placement while the user is actively
+    // placing cursors (first or second boundary). Once the region is complete
+    // (pendingRegion === 0), allow normal point-label clicks again.
+    if (regionActive && (pendingRegion === 1 || pendingRegion === 2)) {
       if (pendingRegion === 1 && x !== null) {
         regionBounds = [x, null];
         pendingRegion = 2;
@@ -2166,6 +2125,9 @@ document.addEventListener('DOMContentLoaded', () => {
         pendingRegion = 0;
         computeRegionStats();
         refreshPlots();
+        // Both cursors are set: prompt for the region label now.
+        const label = prompt('Region Label:', regionLabel || '');
+        if (label !== null) { regionLabel = label; refreshPlots(); }
       }
       return;
     }
@@ -2178,17 +2140,17 @@ document.addEventListener('DOMContentLoaded', () => {
     if (x !== null) showPopover(px, py, x, y);
   });
 
-  setRegionLabelBtn.addEventListener('click', () => {
-    if (!regionActive) return alert('Enable Region Cursors First, Then Set Region Caption');
-    // Prompt modestly for the caption.
-    regionLabel = prompt('Region Caption:', regionLabel || '');
-    if (regionLabel === null) regionLabel = '';
-    refreshPlots();
-  });
-
   clearLabelsBtn.addEventListener('click', () => {
+    // Clear point labels, the region caption, and the cursor region itself.
     notes = [];
     regionLabel = '';
+    if (regionActive) {
+      regionActive = false;
+      regionBounds = [null, null];
+      pendingRegion = 0;
+      regionBtn.classList.remove('active');
+      regionBtn.textContent = 'Add Region Cursors';
+    }
     refreshPlots();
   });
 

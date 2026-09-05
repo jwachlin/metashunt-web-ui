@@ -81,7 +81,11 @@
   <section class="controls">
 
     <div class="ctrl-section" data-collapse-target="dataBody">
-      <button class="ghost collapse-btn ctrl-collapse" data-target="dataBody">Data &amp; Analysis ▾</button>
+      <div class="row">
+        <h4 class="ctrl-title">Data &amp; Analysis</h4>
+        <button class="ghost collapse-btn ctrl-collapse" data-target="dataBody">▾</button>
+        <div class="spacer"></div>
+      </div>
       <div id="dataBody">
         <div class="row">
           <div class="field">
@@ -102,24 +106,18 @@
     </div>
 
     <div class="ctrl-section">
+      <h4 class="ctrl-title">Data Labels</h4>
       <div class="row">
-        <button id="regionBtn" class="ghost">Region Cursors</button>
-        <button id="collapseLabelsBtn" class="ghost collapse-btn">Labels ▾</button>
+        <button id="regionBtn" class="ghost">Add Region Cursors</button>
+        <button id="clearLabelsBtn" class="ghost">Clear All Labels</button>
         <div class="spacer"></div>
-      </div>
-
-      <div id="labelsPanel" class="collapse-body">
-        <div class="row">
-          <div class="spacer"></div>
-          <button id="setRegionLabelBtn" class="ghost">Set Region Caption</button>
-          <button id="clearLabelsBtn" class="ghost">Clear Labels</button>
-        </div>
       </div>
     </div>
 
     <div class="ctrl-section" data-collapse-target="modelBody">
       <div class="row">
-        <button class="ghost collapse-btn ctrl-collapse" data-target="modelBody">Device Model ▾</button>
+        <h4 class="ctrl-title">Device Model</h4>
+        <button class="ghost collapse-btn ctrl-collapse" data-target="modelBody">▾</button>
         <div class="spacer"></div>
       </div>
       <div id="modelBody">
@@ -146,12 +144,14 @@
     </div>
 
     <div id="statsPanel" class="stats-panel">
+      <span class="stat-group-label">Statistics in View:</span>
       <span class="stat-pill">Avg <b id="stAvg">--</b> µA</span>
       <span class="stat-pill">Min <b id="stMin">--</b> µA</span>
       <span class="stat-pill">Max <b id="stMax">--</b> µA</span>
-      <span class="stat-pill">Std <b id="stSd">--</b></span>
+      <span class="stat-pill">Std. Dev. <b id="stSd">--</b> µA</span>
+      <span class="stat-group-label">Whole Dataset:</span>
       <span class="stat-pill">Charge <b id="stCharge">--</b> µAh</span>
-      <span class="stat-pill">Batt life <b id="stBatt">--</b></span>
+      <span class="stat-pill">Predicted Battery Life <b id="stBatt">--</b></span>
       <span id="stLive" class="stat-pill live">I: <b id="stLiveVal">0.00</b> <span id="stLiveUnit">µA</span></span>
       <span id="stStored" class="stat-pill stored" style="display:none">Stored <b id="stStoredPts">0</b> pts · ~<b id="stStoredMem">0</b></span>
       <span id="stDecim" class="stat-pill decim" style="display:none">Decim <b id="stDecimPct">--</b>%</span>
@@ -161,7 +161,6 @@
   </section>
 
   <main class="plots">
-    <div id="hoverReadout" class="hover-readout" style="display:none"></div>
     <div class="card">
       <div class="card-head">
         <h3>Current vs Time</h3>

@@ -1,5 +1,7 @@
 :root {
-  --topbar-h: 125px; /* sticky topbar height (72px logo + 26px top + 26px bottom + 1px border) */
+  /* sticky topbar height: in-flow children (toggle + status) + 2×26px padding + border
+     (the 72px logo is absolutely positioned, so it doesn't set height) */
+  --topbar-h: 84px;
   --bg: #f5f7fb;
   --bg-soft: #eef1f6;
   --card: #ffffff;
@@ -73,6 +75,7 @@ body {
   position: sticky;
   top: 0;
   z-index: 10;
+  height: var(--topbar-h);
   display: flex;
   align-items: center;
   padding: 26px 16px 26px 20px;
@@ -147,7 +150,7 @@ body {
   top: var(--topbar-h);
   z-index: 9;
   background: var(--card);
-  padding: 8px 24px 14px;
+  padding: 10px 24px 16px;
   border-bottom: 1px solid var(--border);
   box-shadow: var(--shadow);
 }
@@ -236,8 +239,16 @@ button.export:hover { background: #b45309; }
 .collapse-body.open { display: block; }
 
 /* Collapsible control sections */
-.ctrl-collapse { padding: 6px 10px; font-size: 12px; color: var(--muted); }
-.ctrl-section[data-collapse-target] { display: flex; flex-direction: column; gap: 8px; }
+.ctrl-collapse {
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.ctrl-section[data-collapse-target] {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.ctrl-section[data-collapse-target] .row { align-items: center; }
+.ctrl-section[data-collapse-target] .ctrl-title { margin: 0; }
 .ctrl-section[data-collapse-target] > [id$="Body"] { display: block; }
 .ctrl-section[data-collapse-target].expanded > [id$="Body"] { display: block; }
 .ctrl-section[data-collapse-target].collapsed > [id$="Body"] { display: none; }
@@ -268,16 +279,6 @@ button.export:hover { background: #b45309; }
 .log-row .log-btn { padding: 6px 9px; }
 .log-fit { color: var(--acc); }
 .log-remove { color: var(--danger); }
-
-/* Hover readout bar */
-.hover-readout {
-  grid-column: 1 / -1;
-  display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
-  font-size: 12px; color: var(--muted);
-  background: var(--card); border: 1px solid var(--border); border-radius: 10px;
-  padding: 8px 14px; box-shadow: var(--shadow);
-}
-.hover-readout b { color: var(--text); font-variant-numeric: tabular-nums; font-weight: 600; }
 
 /* Device model builder */
 .model-status { font-size: 12px; color: var(--muted); margin-bottom: 8px; white-space: pre-wrap; }
@@ -347,6 +348,11 @@ button.export:hover { background: #b45309; }
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
   margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
   font-size: 13px;
+}
+.stat-group-label {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+  text-transform: uppercase; color: var(--muted);
+  margin-right: 2px;
 }
 .stat-pill {
   background: var(--chip);
