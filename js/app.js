@@ -36,10 +36,11 @@ let liveQX = [], liveQY = [];
 let csvLogs = [];   // { id, name, color, x, y, qx, qy, tOffset, qOffset }
 let logIdSeq = 0;
 
-const FLUSH_MS = 50;
-const WINDOW_S = 10;         // sliding window length (seconds)
+const FLUSH_MS = 100;        // base render cadence (slower = lighter CPU → fewer drops)
+const WINDOW_S = 5;          // sliding window length (seconds) - shorter = fewer points
 const MAX_MEMORY = 2000000;  // cap for retained history records
-const PLOT_MAX = 60000;      // max points rendered per plot per trace
+const PLOT_MAX = 60000;      // max points rendered per plot per trace (long/memory view)
+const RENDER_MAX = 10000;    // aggressive live decimation cap (full fidelity shown on Stop)
 
 let isRunningAtModule = false; // module-level mirror for module-scope fns
 
@@ -109,11 +110,12 @@ let regionLabel = '';      // shown on the region, if set
 
 /* -------------------- HELPERS -------------------- */
 
-// Min/max decimation: keeps peaks so waveforms stay accurate at low point counts.
+// Min/max decimation: keeps peaks so waveforms stay accurate at low point
+// counts. Bucket sized so the ≤3 kept points per bucket never exceed maxN.
 function decimate(x, y, maxN) {
   const n = x.length;
   if (n <= maxN) return { x, y };
-  const bucket = Math.max(1, Math.ceil(n / maxN));
+  const bucket = Math.max(3, Math.ceil((3 * n) / maxN));
   const rx = [], ry = [];
   for (let i = 0; i < n; i += bucket) {
     const end = Math.min(i + bucket, n);
@@ -915,7 +917,7 @@ function renderFft() {
       xaxis: { title: 'Frequency (Hz)' },
       yaxis: { title: 'Mag (µA)', type: 'log', range: [0, 1] },
       annotations: [{
-        text: 'FFT Not Available for Decimated Data.<br>Zoom the Live 10 s View for Spectrum Analysis.',
+        text: 'FFT Not Available for Decimated Data.<br>Zoom the Live View for Spectrum Analysis.',
         showarrow: false, xref: 'paper', yref: 'paper',
         x: 0.5, y: 0.5, xanchor: 'center', yanchor: 'middle',
         font: { color: theme().muted, size: 13 }, align: 'center'
@@ -1175,7 +1177,7 @@ function visibleView() {
     }
     return out;
   }
-  return liveY;  // no zoom: show the live 10s window
+  return liveY;  // no zoom: show the live window
 }
 
 function renderLiveStats() {
@@ -1264,7 +1266,7 @@ function updateDataSourceHint() {
   } else if (isViewingMemory && curRows.length > 0) {
     scope = 'Entire record';
   } else {
-    scope = 'Live (last 10 s window)';
+    scope = `Live (last ${WINDOW_S} s window)`;
   }
   if (decimEnabled && isViewingMemory && !visibleRange) scope += ' (decimated)';
   if (hintCharge) hintCharge.textContent = `Charge — ${scope}`;
@@ -1363,16 +1365,23 @@ function yAxisCurrent() {
 
 // Renders both primary plots sharing one x-axis definition, guaranteeing they
 // always show the same x-range without racing a separate relayout.
+// Cost control: while measuring, aggressively decimate the live window down to
+// RENDER_MAX so the flush stays light and the Web Serial read loop stays fed.
+// When measuring has stopped, render at full resolution (fidelity on Stop).
 function renderPrimaryPair(xaxis) {
+  const fullRes = !isRunningAtModule;
+  const pCur = fullRes ? { x: liveX, y: liveY } : decimate(liveX, liveY, RENDER_MAX);
+  const pChg = fullRes ? { x: liveQX, y: liveQY } : decimate(liveQX, liveQY, RENDER_MAX);
+
   const themedX = themedLayout({ margin: { t: 16 }, xaxis, yaxis: yAxisCurrent() });
   Plotly.react('plot-current', [
-    { x: [...liveX], y: [...liveY], mode: 'lines', name: 'Live Current' },
+    { x: pCur.x, y: pCur.y, mode: 'lines', name: 'Live Current' },
     ...csvCurrentTraces(),
     ...modelCurrentTraces()
   ], { ...themedX, shapes: currentShapes('plot-current'), annotations: currentAnnotations() });
 
   Plotly.react('plot-charge', [
-    { x: [...liveQX], y: [...liveQY], mode: 'lines', name: 'Live Charge' },
+    { x: pChg.x, y: pChg.y, mode: 'lines', name: 'Live Charge' },
     ...csvChargeTraces(),
     ...modelChargeTraces()
   ], themedLayout({
@@ -1479,20 +1488,43 @@ function renderMemory() {
   renderAnalysisPlots();
 }
 
-/* -------------------- FLUSH LOOP -------------------- */
+/* -------------------- FLUSH LOOP (adaptive) -------------------- */
 
-setInterval(() => {
+// Self-rescheduling flush: after each render we measure how long it took and
+// extend the next tick if we're over budget. This prevents heavy Plotly renders
+// from starving the Web Serial read loop (which was dropping ~200-frame chunks
+// whenever the fixed 50ms interval overran).
+let flushTimer = null;
+let nextFlushDelay = FLUSH_MS;
+
+function flushTick() {
+  const t0 = performance.now();
   tick++;
-  if (!needsUpdate || liveX.length === 0 || isViewingMemory) return;
-  needsUpdate = false;
-  renderWindow();
-  renderLiveStats();
-  updateDataSourceHint();
-  if (tick % 5 === 0) renderCq();
-  if (tick % 5 === 0) renderHistogram();
-  if (tick % 5 === 0) renderChargeDist();
-  if (tick % 20 === 0) renderFft();
-}, FLUSH_MS);
+
+  if (needsUpdate && liveX.length > 0 && !isViewingMemory) {
+    needsUpdate = false;
+    renderWindow();
+    renderLiveStats();
+    updateDataSourceHint();
+    if (tick % 5 === 0) renderCq();
+    if (tick % 5 === 0) renderHistogram();
+    if (tick % 5 === 0) renderChargeDist();
+    if (tick % 50 === 0) renderFft();
+  }
+
+  const elapsed = performance.now() - t0;
+  if (elapsed > FLUSH_MS) {
+    // Over budget: back off so we never overrun again (trade ~50ms cadence for
+    // a steady, lossless data feed).
+    nextFlushDelay = Math.min(300, Math.max(FLUSH_MS, Math.round(elapsed)));
+  } else if (nextFlushDelay > FLUSH_MS) {
+    // Recovered: ease back toward the nominal cadence.
+    nextFlushDelay = Math.max(FLUSH_MS, nextFlushDelay - 10);
+  }
+
+  flushTimer = setTimeout(flushTick, nextFlushDelay);
+}
+flushTimer = setTimeout(flushTick, FLUSH_MS);
 
 /* -------------------- AXIS SYNC SAFETY NET -------------------- */
 
@@ -1536,6 +1568,23 @@ setInterval(() => {
 
 /* -------------------- MEASUREMENT -------------------- */
 
+let lastPushT = null;   // for [gap] cross-batch diagnostics
+let gapDiag = { hole: 0, maxHole: 0, frames: 0, at: performance.now(), lastReport: performance.now() };
+const GAP_REPORT_MS = 2000;
+
+function noteGap(dt, isCross, t) {
+  gapDiag.hole++;
+  gapDiag.maxHole = Math.max(gapDiag.maxHole, dt);
+  gapDiag.frames += Math.round(dt * 6200);
+  const now = performance.now();
+  if (now - gapDiag.lastReport >= GAP_REPORT_MS) {
+    console.warn(
+      `[gap-summary] ${gapDiag.hole} holes over ${((now - gapDiag.lastReport) / 1000).toFixed(1)}s, max=${gapDiag.maxHole.toFixed(3)}s, ~${gapDiag.frames} frames missing; recent=${isCross ? 'cross-batch' : 'in-batch'} @t=${t.toFixed(3)}s`
+    );
+    gapDiag.hole = 0; gapDiag.maxHole = 0; gapDiag.frames = 0; gapDiag.lastReport = now;
+  }
+}
+
 function handleMeasurement(batch) {
   const n = batch.x.length;
 
@@ -1559,6 +1608,19 @@ function handleMeasurement(batch) {
     liveQY.push(batch.q[i]);
   }
 
+  // Diagnostic: surface any gap in x where many frames are missing (a real hole
+  // in received data, distinct from a flat signal). Checks inside the batch and
+  // across the batch boundary.
+  if (lastPushT !== null && n > 0) {
+    const crossDt = batch.x[0] - lastPushT;
+    if (crossDt > 0.01) noteGap(crossDt, true, batch.x[0]);
+  }
+  for (let i = 1; i < n; i++) {
+    const dt = batch.x[i] - batch.x[i - 1];
+    if (dt > 0.01) noteGap(dt, false, batch.x[i]);
+  }
+  if (n > 0) lastPushT = batch.x[n - 1];
+
   needsUpdate = true;
   updateDataUiState();
 }
@@ -1567,6 +1629,8 @@ function resetData() {
   curRows.clear();
   rawCount = 0;
   decimator.reset();
+  lastPushT = null;
+  gapDiag = { hole: 0, maxHole: 0, frames: 0, at: performance.now(), lastReport: performance.now() };
   liveX.length = liveY.length = 0;
   liveQX.length = liveQY.length = 0;
 
@@ -1963,6 +2027,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (demoWorker) { demoWorker.terminate(); demoWorker = null; }
     setUiRunning(false);
     setStatus('Stopped');
+    // Measurement stopped: re-render the last window at full resolution.
+    if (liveX.length && !isViewingMemory) renderWindow();
   }
 
   function startDemo() {
@@ -2015,6 +2081,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (demoActive) { stopDemo(); return; }
     setUiRunning(false);
     await device.stop();
+    // Measurement stopped: re-render the last window at full resolution.
+    if (liveX.length && !isViewingMemory) renderWindow();
   });
 
   /* -------------------- ANALYSIS CONTROLS -------------------- */

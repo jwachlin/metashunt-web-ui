@@ -10,6 +10,23 @@ let batchX = [];
 let batchY = [];
 let batchQ = [];
 
+// Diagnostics: raw bytes delivered vs frames accepted.
+let rxBytes = 0;
+let acceptedFrames = 0;
+let statsWindowAt = 0;
+const STATS_WINDOW = 3000;
+
+function maybePostWindowStats(now) {
+  if (now - statsWindowAt < STATS_WINDOW) return;
+  self.postMessage({
+    type: 'window-stats',
+    data: { rxBytes, acceptedFrames, ms: now - statsWindowAt }
+  });
+  rxBytes = 0;
+  acceptedFrames = 0;
+  statsWindowAt = now;
+}
+
 self.onmessage = (e) => {
   const { type, data } = e.data;
 
@@ -27,6 +44,11 @@ self.onmessage = (e) => {
       batchX.push(t);
       batchY.push(current_uA);
       batchQ.push(qAccum_uAh);
+      acceptedFrames++;
+      maybePostWindowStats(performance.now());
+    }, {
+      logStatsEveryMs: 3000,
+      onStats: (s) => self.postMessage({ type: 'parser-stats', data: s })
     });
     return;
   }
@@ -38,15 +60,23 @@ self.onmessage = (e) => {
     batchX.length = 0;
     batchY.length = 0;
     batchQ.length = 0;
+    rxBytes = 0;
+    acceptedFrames = 0;
+    statsWindowAt = 0;
     return;
   }
 
   if (type === 'chunk') {
     // Process the binary chunk
-    parser?.push(new Uint8Array(data));
+    if (parser) {
+      rxBytes += new Uint8Array(data).byteLength;
+      parser.push(new Uint8Array(data));
+      maybePostWindowStats(performance.now());
+    } else {
+      console.warn('[worker] chunk received before parser init');
+    }
     
-    // The parser just executed synchronously. 
-    // Now flush the accumulated batch as a single IPC message.
+    // Include running accepted-frame count so main thread can compare bytes vs frames.
     if (batchX.length > 0) {
       self.postMessage({ 
         type: 'batch', 

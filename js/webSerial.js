@@ -162,9 +162,22 @@ export class MetaShuntSerial {
 
   _initParser() {
     if (this.useWorker) {
-      this.worker = new Worker('./js/worker.js', { type: 'module' });
+      this.worker = new Worker('./js/worker.js?v=7', { type: 'module' });
 
       this.worker.onmessage = e => {
+        if (e.data?.type === 'window-stats') {
+          const w = e.data.data;
+          const framesPerS = w.acceptedFrames / (w.ms / 1000);
+          const bytesPerFrame = w.rxBytes / (w.acceptedFrames || 1);
+          console.log(`[window] in ${w.ms}ms: rx ${w.rxBytes} B → ${w.acceptedFrames} frames (${framesPerS.toFixed(0)}/s, ${bytesPerFrame.toFixed(1)} B/frame)`);
+          return;
+        }
+        if (e.data?.type === 'parser-stats') {
+          // Surface parser diagnostics on the main thread console.
+          const s = e.data.data;
+          console.log(`[parser-stats] valid=${s.valid} cksumFail=${s.cksumFail} resyncAA=${s.resyncAA} monoDrop=${s.monoDrop} gapDrop=${s.gapDrop} curDrop=${s.curDrop} nanDrop=${s.nanDrop}`);
+          return;
+        }
         if (e.data?.type === 'batch') {
           const batch = e.data.data;
           this.onDataCb(batch); // Pass the whole batch to app.js
@@ -195,14 +208,33 @@ export class MetaShuntSerial {
   }
 
   async _readLoop() {
+    // Small transport diagnostics: bytes read + any long gaps between reads.
+    let rxBytes = 0, lastReadAt = performance.now(), gapCount = 0, gapTotal = 0;
+    const statsEvery = 3000;
+    let statsAt = performance.now();
     try {
       while (this.running) {
         const { value, done } = await this.reader.read();
-        if (done || !value) break;
+        const now = performance.now();
+        if (done) { console.warn('[serial] read() returned done'); break; }
+        if (!value) { continue; }
+
+        rxBytes += value.byteLength;
+        // Flag a transport-level gap between reads (excluding the tracer's own time).
+        const gapMs = now - lastReadAt;
+        if (gapMs > 20) { gapCount++; gapTotal += gapMs; }
+        lastReadAt = now;
+
         if (!this.armed) continue;
 
         if (this.useWorker) {
-          this.worker.postMessage({ type: 'chunk', data: value.buffer }, [value.buffer]);
+          // IMPORTANT: do NOT transfer value.buffer. A transferred (detached)
+          // buffer can race with the next reader.read() churn and drop/garble a
+          // whole chunk (~30 ms of 6 kHz frames), producing the exact "straight
+          // line between points ~30 ms apart" symptom. Structured-clone copy is
+          // negligible cost vs 65 KB/s.
+          const copy = value.slice(0);
+          this.worker.postMessage({ type: 'chunk', data: copy.buffer }, [copy.buffer]);
         } else {
           this.parser.push(value);
         }
@@ -212,6 +244,11 @@ export class MetaShuntSerial {
           // We count samples here to decide when to stop the UI
           // Note: In worker mode, we rely on the parser emitting events
           // and we should increment receivedBurst in the worker onmessage handler.
+        }
+
+        if (now - statsAt > statsEvery) {
+          console.log(`[serial] ${(rxBytes / (now - statsAt) * 1e3).toFixed(0)} B/s over ${(now - statsAt).toFixed(0)} ms, reads with >20ms gap: ${gapCount}, avg gap (when gapped): ${gapTotal / (gapCount || 1)}ms`);
+          rxBytes = 0; gapCount = 0; gapTotal = 0; statsAt = now;
         }
       }
     } catch (e) {
