@@ -8,7 +8,6 @@ const statusTextEl = document.getElementById('statusText');
 const deviceInfoEl = document.getElementById('deviceInfo');
 
 const loadCsvBtn = document.getElementById('loadCsvBtn');
-const clearCsvBtn = document.getElementById('clearCsvBtn');
 const exportCsvBtn = document.getElementById('exportCsvBtn');
 const exportImgsBtn = document.getElementById('exportImgsBtn');
 const plotMemoryBtn = document.getElementById('plotMemoryBtn');
@@ -1251,13 +1250,6 @@ loadCsvBtn.addEventListener('click', () => {
     renderLogList();
   };
   input.click();
-});
-
-clearCsvBtn.addEventListener('click', () => {
-  csvLogs = [];
-  renderLogList();
-  if (isViewingMemory && curRows.length) renderMemory();
-  else renderWindow();
 });
 
 function parseCsvData(csvContent, name) {

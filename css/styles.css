@@ -1,4 +1,5 @@
 :root {
+  --topbar-h: 125px; /* sticky topbar height (72px logo + 26px top + 26px bottom + 1px border) */
   --bg: #f5f7fb;
   --bg-soft: #eef1f6;
   --card: #ffffff;
@@ -139,6 +140,18 @@ body {
 
 .ctrl-section { padding: 12px 0; }
 .ctrl-section + .ctrl-section { border-top: 1px solid var(--border); }
+
+/* Measurement controls stay pinned below the sticky logo bar while scrolling. */
+.sticky-measure {
+  position: sticky;
+  top: var(--topbar-h);
+  z-index: 9;
+  background: var(--card);
+  padding: 8px 24px 14px;
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+.sticky-measure .ctrl-measure { padding: 0; }
 
 .ctrl-title {
   font-size: 11px;
