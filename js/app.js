@@ -626,6 +626,8 @@ function fsPerSample(xs) {
 
 // x-range the user is currently zoomed into on the primary plots (or null).
 let visibleRange = null;
+// y-range the user selected on Current vs Time (or null = autorange).
+let visibleYRange = null;
 let rangeLock = false;  // guards against our own re-renders feeding relayout
 
 function dataInView(src) {
@@ -745,9 +747,19 @@ function plotAxis(gdId) {
   return gd && gd._fullLayout && gd._fullLayout.xaxis;
 }
 
+function plotYAxis(gdId) {
+  const gd = document.getElementById(gdId);
+  return gd && gd._fullLayout && gd._fullLayout.yaxis;
+}
+
 function appliedRange(gdId) {
   const ax = plotAxis(gdId);
   return ax && Array.isArray(ax.range) ? ax.range : null;
+}
+
+function appliedYRange(gdId) {
+  const ay = plotYAxis(gdId);
+  return ay && Array.isArray(ay.range) ? ay.range : null;
 }
 
 function sameRange(a, b) {
@@ -782,7 +794,8 @@ function setVisibleRange(r) {
 }
 
 // The interactive zoom on one plot: capture its applied range, sanitize, mirror
-// to the other and update analyses. Ignored while we are suppressed.
+// to the other and update analyses. Also remembers the current plot's y-range so
+// the 50ms flush doesn't stomp the y-limits the user selected.
 function captureXRange(gdId) {
   if (rangeLock || isSuppressed()) return;
   const cur = appliedRange(gdId);
@@ -793,12 +806,18 @@ function captureXRange(gdId) {
   }
   const r = [Math.min(+cur[0], +cur[1]), Math.max(+cur[0], +cur[1])];
   const same = visibleRange && sameRange(r, visibleRange);
-  if (same) return;
-  rangeLock = true;
-  try {
-    setVisibleRange(r);
-  } finally {
-    rangeLock = false;
+  // Capture the y-range (sanitized) whenever the interacted plot has one.
+  const yr = appliedYRange(gdId);
+  visibleYRange = (yr && validRange(yr))
+    ? [Math.min(+yr[0], +yr[1]), Math.max(+yr[0], +yr[1])]
+    : null;
+  if (!same) {
+    rangeLock = true;
+    try {
+      setVisibleRange(r);
+    } finally {
+      rangeLock = false;
+    }
   }
   scheduleAnalysis();
 }
@@ -986,10 +1005,18 @@ function renderWindow() {
   renderPrimaryPair(xaxis);
 }
 
+// y-axis config for Current vs Time: honors the user's selected y-range and
+// does NOT re-autorange on every 50ms flush (which would wipe their zoom).
+function yAxisCurrent() {
+  return visibleYRange
+    ? { title: 'Current (µA)', range: visibleYRange, autorange: false }
+    : { title: 'Current (µA)', autorange: true };
+}
+
 // Renders both primary plots sharing one x-axis definition, guaranteeing they
 // always show the same x-range without racing a separate relayout.
 function renderPrimaryPair(xaxis) {
-  const themedX = themedLayout({ margin: { t: 16 }, xaxis, yaxis: { title: 'Current (µA)', autorange: true } });
+  const themedX = themedLayout({ margin: { t: 16 }, xaxis, yaxis: yAxisCurrent() });
   Plotly.react('plot-current', [
     { x: [...liveX], y: [...liveY], mode: 'lines', name: 'Live Current' },
     ...csvCurrentTraces()
@@ -1011,7 +1038,7 @@ function resetPlots() {
   const layoutResetCurrent = {
     margin: { t: 16 },
     xaxis: { title: 'Time (s)', autorange: true },
-    yaxis: { title: 'Current (µA)', autorange: true }
+    yaxis: yAxisCurrent()
   };
   const layoutResetCharge = {
     margin: { t: 16 },
@@ -1057,7 +1084,7 @@ function renderMemory() {
     Plotly.react('plot-current', [
       { x: [], y: [], mode: 'lines', name: 'Live Current' },
       ...csvCurrentTraces()
-    ], themedLayout({ margin: { t: 16 }, xaxis: emptyX, yaxis: { title: 'Current (µA)', autorange: true } }));
+    ], themedLayout({ margin: { t: 16 }, xaxis: emptyX, yaxis: yAxisCurrent() }));
     Plotly.react('plot-charge', [
       { x: [], y: [], mode: 'lines', name: 'Live Charge' },
       ...csvChargeTraces()
@@ -1086,7 +1113,7 @@ function renderMemory() {
   Plotly.react('plot-current', [
     { x: cur.x, y: cur.y, mode: 'lines', name: 'Live Current' },
     ...csvCurrentTraces()
-  ], themedLayout({ margin: { t: 16 }, xaxis, yaxis: { title: 'Current (µA)', autorange: true }, shapes: currentShapes('plot-current'), annotations: currentAnnotations() }));
+  ], themedLayout({ margin: { t: 16 }, xaxis, yaxis: yAxisCurrent(), shapes: currentShapes('plot-current'), annotations: currentAnnotations() }));
 
   Plotly.react('plot-charge', [
     { x: chr.x, y: chr.y, mode: 'lines', name: 'Live Charge' },
@@ -1191,6 +1218,7 @@ function resetData() {
 
   // Drop any zoom; return to default auto/sliding ranges.
   visibleRange = null;
+  visibleYRange = null;
   rangeLock = false;
 
   regionActive = false;
@@ -1344,6 +1372,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const triggerUA = document.getElementById('triggerUA');
   const stageIndex = document.getElementById('stageIndex');
   const startBtn = document.getElementById('startBtn');
+  const startDemoBtn = document.getElementById('startDemoBtn');
   const stopBtn = document.getElementById('stopBtn');
 
   burstHz.min = 500; // hardware is 500 Hz-quantized
@@ -1421,10 +1450,13 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   let uiRunning = false;
+  let demoActive = false;
+  let demoWorker = null;
 
   function setUiRunning(running) {
     uiRunning = running;
     startBtn.disabled = running;
+    startDemoBtn.disabled = running;
     stopBtn.disabled = !running;
     if (typeof syncDecimUi === 'function') syncDecimUi();
   }
@@ -1485,6 +1517,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /* -------------------- START / STOP -------------------- */
 
+  function stopDemo() {
+    if (!demoActive) return;
+    demoActive = false;
+    if (demoWorker) { demoWorker.terminate(); demoWorker = null; }
+    setUiRunning(false);
+    setStatus('Stopped');
+  }
+
+  function startDemo() {
+    if (uiRunning) return;
+    resetData();
+    demoWorker = new Worker('./js/demoWorker.js');
+    demoWorker.onmessage = (e) => {
+      if (e.data?.type === 'demo-batch') handleMeasurement(e.data.data);
+    };
+    demoWorker.onerror = (e) => {
+      console.error('Demo worker error:', e);
+      stopDemo();
+      setStatus('Demo Error');
+    };
+    demoWorker.postMessage({ type: 'start' });
+    demoActive = true;
+    setUiRunning(true);
+    setStatus('Running Demo...');
+  }
+  startDemoBtn.addEventListener('click', startDemo);
+
   startBtn.addEventListener('click', async () => {
     if (uiRunning) return;
     try {
@@ -1513,6 +1572,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   stopBtn.addEventListener('click', async () => {
     if (!uiRunning) return;
+    if (demoActive) { stopDemo(); return; }
     setUiRunning(false);
     await device.stop();
   });
@@ -1598,6 +1658,7 @@ document.addEventListener('DOMContentLoaded', () => {
     rangeLock = true;
     try {
       setVisibleRange(null);
+      visibleYRange = null;
       refreshPlots();
     } finally { rangeLock = false; }
     scheduleAnalysis();
@@ -1680,6 +1741,9 @@ document.addEventListener('DOMContentLoaded', () => {
     onTriggerChange();
     // Decimation only makes sense in continuous mode.
     if (typeof showDecimCtrl === 'function') showDecimCtrl(modeSel.value === 'continuous');
+    // Demo only available in continuous mode; stop it if running.
+    startDemoBtn.style.display = isBurst ? 'none' : '';
+    if (isBurst && demoActive) stopDemo();
   });
 
   triggerSel.addEventListener('change', onTriggerChange);

@@ -190,6 +190,19 @@ button.primary { background: var(--primary); color: #fff; border-color: transpar
 button.danger { background: var(--danger); color: #fff; border-color: transparent; }
 button.ghost { background: var(--card); }
 button.active { background: var(--acc); color: #fff; border-color: transparent; }
+/* Start Demo: teal, distinct but readable in both light and dark themes. */
+button#startDemoBtn.button.demo,
+button.startDemoBtn.button.demo,
+button.demo {
+  background: #14b8a6;
+  border-color: transparent;
+  color: #ffffff;
+}
+button#startDemoBtn.button.demo:hover,
+button.demo:hover {
+  background: #0d9488;
+}
+button.demo:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .spacer { flex: 1; }
 
