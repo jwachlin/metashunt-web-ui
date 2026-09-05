@@ -41,7 +41,7 @@ export class MetaShuntSerial {
     if (authorizedPorts.length > 0) {
       // TODO filter
       this.port = authorizedPorts[0];
-      this.onStatusCb('Found remembered device...');
+      this.onStatusCb('Found Remembered Device…');
     } else {
       // Otherwise, we MUST show the picker UI (requires user gesture)
       this.port = await navigator.serial.requestPort();
@@ -113,11 +113,11 @@ export class MetaShuntSerial {
       // 3. Send command to hardware
       await this._write(new Uint8Array(bytes));
       
-      this.onStatusCb(`Burst requested: ${Math.round(rate500 * 500)} Hz, trigger=${trigger}`);
+      this.onStatusCb(`Burst Requested: ${Math.round(rate500 * 500)} Hz, Trigger=${trigger}`);
     }
     else
     {
-      this.onStatusCb('Continuous stream started');
+      this.onStatusCb('Continuous Stream Started');
     }
   }
 
@@ -173,7 +173,7 @@ export class MetaShuntSerial {
           if (this.mode === 'burst') {
             this.receivedBurst += batch.x.length;
             if (this.receivedBurst >= this.expectedBurstSamples) {
-              this.onStatusCb(`Burst complete (${this.receivedBurst} samples)`);
+              this.onStatusCb(`Burst Complete (${this.receivedBurst} samples)`);
               this.stop();
             }
           }
@@ -182,7 +182,7 @@ export class MetaShuntSerial {
 
       this.worker.onerror = e => {
         console.error('Worker error:', e);
-        this.onStatusCb('Parser worker error');
+        this.onStatusCb('Parser Worker Error');
       };
 
       this.worker.postMessage({ type: 'init' });

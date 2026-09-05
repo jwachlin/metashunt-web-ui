@@ -12,10 +12,6 @@ const clearCsvBtn = document.getElementById('clearCsvBtn');
 const exportCsvBtn = document.getElementById('exportCsvBtn');
 const exportImgsBtn = document.getElementById('exportImgsBtn');
 const plotMemoryBtn = document.getElementById('plotMemoryBtn');
-const csvOffsetInput   = document.getElementById('csvOffset');
-const csvOffsetControl = document.getElementById('csvOffsetControl');
-const csvOffsetUp      = document.getElementById('csvOffsetUp');
-const csvOffsetDown    = document.getElementById('csvOffsetDown');
 
 /* -------------------- DEVICE -------------------- */
 
@@ -36,11 +32,9 @@ let decimator = new Decimator(decimIntensity);
 let liveX = [], liveY = [];
 let liveQX = [], liveQY = [];
 
-// CSV display data (decimated so plotting/shifting stays cheap)
-let csvX = [], csvY = [];
-let csvQX = [], csvQY = [];
-let csvLoaded = false;
-let csvTimeOffset = 0;
+// Imported log overlays (decimated so plotting/shifting stays cheap)
+let csvLogs = [];   // { id, name, color, x, y, qx, qy, tOffset, qOffset }
+let logIdSeq = 0;
 
 const FLUSH_MS = 50;
 const WINDOW_S = 10;         // sliding window length (seconds)
@@ -144,13 +138,217 @@ function capMemory() {
   curRows.subsample(step);
 }
 
-function shiftedCsvX()  { return csvX.map(x => x + csvTimeOffset); }
-function shiftedCsvQX() { return csvQX.map(x => x + csvTimeOffset); }
+const LOG_COLORS = ['#e11d48', '#d97706', '#16a34a', '#7c3aed', '#0891b2', '#ca8a04', '#db2777', '#059669'];
+
+function logCurrentTrace(log) {
+  return {
+    x: log.x.map(v => v + log.tOffset),
+    y: log.y,
+    mode: 'lines', name: log.name,
+    line: { color: log.color },
+    visible: true
+  };
+}
+
+function logChargeTrace(log) {
+  return {
+    x: log.qx.map(v => v + log.tOffset),
+    y: log.qy.map(v => v + log.qOffset),
+    mode: 'lines', name: log.name,
+    line: { color: log.color },
+    visible: true
+  };
+}
+
+function csvCurrentTraces() { return csvLogs.map(logCurrentTrace); }
+function csvChargeTraces()  { return csvLogs.map(logChargeTrace); }
 
 function replotCsv() {
-  Plotly.restyle('plot-current', { x: [shiftedCsvX()], y: [csvY],  visible: true }, [1]);
-  Plotly.restyle('plot-charge',  { x: [shiftedCsvQX()], y: [csvQY], visible: true }, [1]);
+  if (isViewingMemory && curRows.length) renderMemory();
+  else renderWindow();
 }
+
+/* -------------------- IMPORTED LOG LIST UI -------------------- */
+
+const CSV_T_STEP = 0.1;  // seconds
+const CSV_Q_STEP = 1.0;  // µAh
+
+function renderLogList() {
+  const panel = document.getElementById('logsPanel');
+  if (!panel) return;
+  panel.innerHTML = '';
+  if (!csvLogs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'log-empty';
+    empty.textContent = 'No Logs Imported.';
+    panel.appendChild(empty);
+    return;
+  }
+  for (const log of csvLogs) {
+    const row = document.createElement('div');
+    row.className = 'log-row';
+    row.dataset.id = log.id;
+
+    const swatch = document.createElement('span');
+    swatch.className = 'log-swatch';
+    swatch.style.background = log.color;
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'log-name';
+    nameInput.value = log.name;
+    nameInput.title = 'Rename Log';
+
+    const tLabel = document.createElement('span');
+    tLabel.className = 'log-label';
+    tLabel.textContent = 't+';
+
+    const tMinus = document.createElement('button');
+    tMinus.className = 'ghost small log-btn';
+    tMinus.textContent = '−';
+    const tInput = document.createElement('input');
+    tInput.type = 'number';
+    tInput.className = 'log-t';
+    tInput.step = CSV_T_STEP;
+    tInput.value = log.tOffset;
+    const tPlus = document.createElement('button');
+    tPlus.className = 'ghost small log-btn';
+    tPlus.textContent = '+';
+
+    const qLabel = document.createElement('span');
+    qLabel.className = 'log-label';
+    qLabel.textContent = 'Q+';
+
+    const qMinus = document.createElement('button');
+    qMinus.className = 'ghost small log-btn';
+    qMinus.textContent = '−';
+    const qInput = document.createElement('input');
+    qInput.type = 'number';
+    qInput.className = 'log-q';
+    qInput.step = CSV_Q_STEP;
+    qInput.value = log.qOffset;
+    const qPlus = document.createElement('button');
+    qPlus.className = 'ghost small log-btn';
+    qPlus.textContent = '+';
+
+const remove = document.createElement('button');
+      remove.className = 'ghost small log-btn log-remove';
+      remove.textContent = '✕';
+      remove.title = 'Remove log';
+
+      const fit = document.createElement('button');
+      fit.className = 'ghost small log-btn log-fit';
+      fit.textContent = 'Re-Fit Data';
+      fit.title = 'Align Time to Live via Cross-Correlation, Then Zero Charge at t=0';
+
+      row.append(swatch, nameInput, tLabel, tMinus, tInput, tPlus, qLabel, qMinus, qInput, qPlus, fit, remove);
+      panel.appendChild(row);
+
+    // --- Wire controls ---
+    nameInput.addEventListener('change', () => { log.name = nameInput.value.trim() || log.name; nameInput.value = log.name; replotCsv(); });
+
+    const applyT = (v) => { log.tOffset = v; tInput.value = v; replotCsv(); };
+    tMinus.addEventListener('click', () => applyT(+(parseFloat(tInput.value) || 0) - CSV_T_STEP));
+    tPlus .addEventListener('click', () => applyT(+(parseFloat(tInput.value) || 0) + CSV_T_STEP));
+    tInput.addEventListener('change', () => applyT(parseFloat(tInput.value) || 0));
+
+    const applyQ = (v) => { log.qOffset = v; qInput.value = v; replotCsv(); };
+    qMinus.addEventListener('click', () => applyQ(+(parseFloat(qInput.value) || 0) - CSV_Q_STEP));
+    qPlus .addEventListener('click', () => applyQ(+(parseFloat(qInput.value) || 0) + CSV_Q_STEP));
+    qInput.addEventListener('change', () => applyQ(parseFloat(qInput.value) || 0));
+
+    remove.addEventListener('click', () => {
+      csvLogs = csvLogs.filter(l => l.id !== log.id);
+      renderLogList();
+      replotCsv();
+    });
+
+    fit.addEventListener('click', () => {
+      fitLogToLive(log);
+      tInput.value = log.tOffset;
+      qInput.value = log.qOffset;
+      replotCsv();
+    });
+  }
+}
+
+// Linear interpolant over (xs, ys); returns NaN outside the domain.
+function makeInterp(xs, ys) {
+  const n = xs.length;
+  return (t) => {
+    if (!n || t < xs[0] || t > xs[n - 1]) return NaN;
+    let lo = 0, hi = n - 1;
+    while (lo + 1 < hi) {
+      const m = (lo + hi) >> 1;
+      if (xs[m] <= t) lo = m; else hi = m;
+    }
+    const x0 = xs[lo], x1 = xs[hi], y0 = ys[lo], y1 = ys[hi];
+    const f = (x1 - x0) ? (t - x0) / (x1 - x0) : 0;
+    return y0 + (y1 - y0) * f;
+  };
+}
+
+// Two-pass cross-correlation in time between a log and the live current:
+// 1) find shift s maximizing correlation of log(t+s) with live(t),
+// 2) then shift Q so the imported log's accumulated charge is 0 µAh at t=0.
+function fitLogToLive(log, silent = false) {
+  if (!liveX.length) { if (!silent) alert('No Live Data to Fit Against.'); return; }
+  if (!log.x.length || !log.y.length) { if (!silent) alert('Imported Log Has No Data.'); return; }
+
+  const logF = makeInterp(log.x, log.y);     // log current at log-time
+  const liveF = makeInterp(liveX, liveY);    // live current at abs time
+  const t0 = liveX[0], t1 = liveX[liveX.length - 1];
+  const l0 = log.x[0], l1 = log.x[log.x.length - 1];
+
+  const corr = (s) => {
+    const lo = Math.max(t0, l0 - s);
+    const hi = Math.min(t1, l1 - s);
+    if (hi <= lo) return -Infinity;
+    const N = 400;
+    let n = 0, sL = 0, sV = 0;
+    const pairs = [];
+    for (let i = 0; i <= N; i++) {
+      const t = lo + (hi - lo) * i / N;
+      const v = liveF(t);
+      const l = logF(t + s);
+      if (Number.isFinite(v) && Number.isFinite(l)) { pairs.push([v, l]); sV += v; sL += l; n++; }
+    }
+    if (n < 8) return -Infinity;
+    const mV = sV / n, mL = sL / n;
+    let num = 0, dV = 0, dL = 0;
+    for (const [v, l] of pairs) { num += (v - mV) * (l - mL); dV += (v - mV) ** 2; dL += (l - mL) ** 2; }
+    return (dV * dL > 0) ? num / Math.sqrt(dV * dL) : -Infinity;
+  };
+
+  const span = Math.min(10, Math.max(t1 - t0, l1 - l0) * 0.5);
+  let bestS = 0, bestC = -Infinity;
+  for (let s = -span; s <= span; s += 0.05) {
+    const c = corr(s);
+    if (c > bestC) { bestC = c; bestS = s; }
+  }
+  // Fine pass around bestS.
+  for (let s = bestS - 0.05; s <= bestS + 0.05; s += 0.002) {
+    const c = corr(s);
+    if (c > bestC) { bestC = c; bestS = s; }
+  }
+
+  if (!Number.isFinite(bestC)) { if (!silent) alert('No Overlapping Data to Fit.'); return; }
+
+  log.tOffset = Math.round(-bestS * 1000) / 1000;
+
+  // Charge baseline: imported log accumulated charge should be 0 µAh at t=0.
+  // Absolute t=0 is log-time x = -tOffset; interpolate its charge there.
+  const qF = makeInterp(log.qx, log.qy);
+  const qAtZero = qF(-log.tOffset);
+  if (Number.isFinite(qAtZero)) {
+    log.qOffset = Math.round(-qAtZero * 1000) / 1000;
+  } else {
+    // Log doesn't cross t=0 after shift; leave Q as-is.
+    log.qOffset = 0;
+  }
+}
+
+renderLogList();
 
 /* -------------------- ANALYSIS HELPERS -------------------- */
 
@@ -267,7 +465,7 @@ function renderHistogram() {
   Plotly.react('plot-hist', [{
     x: h.edges, y: h.counts, type: 'bar',
     marker: { color: 'rgba(79,70,229,0.5)', line: { color: '#4f46e5', width: 1 } },
-    name: 'Current distribution'
+    name: 'Current Distribution'
   }], themedLayout({
     margin: { t: 16 },
     xaxis: { title: 'Current (µA)' },
@@ -318,7 +516,7 @@ function renderChargeDist() {
   Plotly.react('plot-charge-dist', [{
     x: cd.centers, y: cd.frac, type: 'bar',
     marker: { color: '#14b8a6', line: { width: 0 } },
-    name: 'Charge share'
+    name: 'Charge Share'
   }], themedLayout({
     margin: { t: 16 },
     xaxis: { title: 'Current (µA)' },
@@ -384,7 +582,7 @@ function renderFft() {
       xaxis: { title: 'Frequency (Hz)' },
       yaxis: { title: 'Mag (µA)', type: 'log', range: [0, 1] },
       annotations: [{
-        text: 'FFT not available for decimated data.<br>Zoom the live 10 s view for spectrum analysis.',
+        text: 'FFT Not Available for Decimated Data.<br>Zoom the Live 10 s View for Spectrum Analysis.',
         showarrow: false, xref: 'paper', yref: 'paper',
         x: 0.5, y: 0.5, xanchor: 'center', yanchor: 'middle',
         font: { color: theme().muted, size: 13 }, align: 'center'
@@ -741,7 +939,7 @@ function computeRegionStats() {
     return;
   }
   if (!curRows.length) {
-    regionStatsEl.textContent = 'No data';
+    regionStatsEl.textContent = 'No Data';
     return;
   }
   // curRows is sorted ascending by t; scan the window
@@ -758,7 +956,7 @@ function computeRegionStats() {
     if (prevT !== null) charge += v * (tt - prevT) / 3600.0;
     prevT = tt;
   }
-  if (!n) { regionStatsEl.textContent = 'No data in region'; return; }
+  if (!n) { regionStatsEl.textContent = 'No Data in Region'; return; }
   const avg = sum / n;
   const sd = Math.sqrt(Math.max(0, sumSq / n - avg * avg));
   regionStatsEl.textContent =
@@ -794,12 +992,12 @@ function renderPrimaryPair(xaxis) {
   const themedX = themedLayout({ margin: { t: 16 }, xaxis, yaxis: { title: 'Current (µA)', autorange: true } });
   Plotly.react('plot-current', [
     { x: [...liveX], y: [...liveY], mode: 'lines', name: 'Live Current' },
-    { x: shiftedCsvX(), y: csvY, mode: 'lines', name: 'Log Current', visible: csvLoaded }
+    ...csvCurrentTraces()
   ], { ...themedX, shapes: currentShapes('plot-current'), annotations: currentAnnotations() });
 
   Plotly.react('plot-charge', [
     { x: [...liveQX], y: [...liveQY], mode: 'lines', name: 'Live Charge' },
-    { x: shiftedCsvQX(), y: csvQY, mode: 'lines', name: 'Log Charge', visible: csvLoaded }
+    ...csvChargeTraces()
   ], themedLayout({
     margin: { t: 16 },
     dragmode: false,
@@ -824,12 +1022,12 @@ function resetPlots() {
 
   Plotly.react('plot-current', [
     { x: [], y: [], mode: 'lines', name: 'Live Current' },
-    { x: shiftedCsvX(), y: csvY, mode: 'lines', name: 'Log Current', visible: csvLoaded }
+    ...csvCurrentTraces()
   ], themedLayout({ ...layoutResetCurrent, shapes: currentShapes('plot-current'), annotations: currentAnnotations() }));
 
   Plotly.react('plot-charge', [
     { x: [], y: [], mode: 'lines', name: 'Live Charge' },
-    { x: shiftedCsvQX(), y: csvQY, mode: 'lines', name: 'Log Charge', visible: csvLoaded }
+    ...csvChargeTraces()
   ], themedLayout({ ...layoutResetCharge, shapes: currentShapes('plot-charge') }));
 
   Plotly.react('plot-hist', [{ x: [], y: [], type: 'bar' }],
@@ -858,11 +1056,11 @@ function renderMemory() {
     const emptyX = { title: 'Time (s)', range: visibleRange, autorange: false };
     Plotly.react('plot-current', [
       { x: [], y: [], mode: 'lines', name: 'Live Current' },
-      { x: [], y: [], mode: 'lines', name: 'Log Current', visible: csvLoaded }
+      ...csvCurrentTraces()
     ], themedLayout({ margin: { t: 16 }, xaxis: emptyX, yaxis: { title: 'Current (µA)', autorange: true } }));
     Plotly.react('plot-charge', [
       { x: [], y: [], mode: 'lines', name: 'Live Charge' },
-      { x: [], y: [], mode: 'lines', name: 'Log Charge', visible: csvLoaded }
+      ...csvChargeTraces()
     ], themedLayout({ margin: { t: 16 }, dragmode: false, xaxis: emptyX, yaxis: { title: 'Charge (µAh)', autorange: true } }));
     renderAnalysisPlots();
     return;
@@ -887,12 +1085,12 @@ function renderMemory() {
 
   Plotly.react('plot-current', [
     { x: cur.x, y: cur.y, mode: 'lines', name: 'Live Current' },
-    { x: shiftedCsvX(), y: csvY, mode: 'lines', name: 'Log Current', visible: csvLoaded }
+    ...csvCurrentTraces()
   ], themedLayout({ margin: { t: 16 }, xaxis, yaxis: { title: 'Current (µA)', autorange: true }, shapes: currentShapes('plot-current'), annotations: currentAnnotations() }));
 
   Plotly.react('plot-charge', [
     { x: chr.x, y: chr.y, mode: 'lines', name: 'Live Charge' },
-    { x: shiftedCsvQX(), y: csvQY, mode: 'lines', name: 'Log Charge', visible: csvLoaded }
+    ...csvChargeTraces()
   ], themedLayout({ margin: { t: 16 }, dragmode: false, xaxis, yaxis: { title: 'Charge (µAh)', autorange: true }, shapes: currentShapes('plot-charge') }));
 
   renderAnalysisPlots();
@@ -1012,27 +1210,29 @@ loadCsvBtn.addEventListener('click', () => {
   const input = document.createElement('input');
   input.type = 'file';
   input.accept = '.csv';
+  input.multiple = true;
   input.onchange = async () => {
-    const file = input.files[0];
-    if (!file) return;
-    const text = await file.text();
-    parseCsvData(text);
+    const files = Array.from(input.files || []);
+    for (const file of files) {
+      const text = await file.text();
+      let name = file.name.replace(/\.csv$/i, '').trim() || 'Log';
+      const chosen = prompt('Rename Log:', name);
+      if (chosen !== null && chosen.trim()) name = chosen.trim();
+      parseCsvData(text, name);
+    }
+    renderLogList();
   };
   input.click();
 });
 
 clearCsvBtn.addEventListener('click', () => {
-  csvX.length = csvY.length = 0;
-  csvQX.length = csvQY.length = 0;
-  csvLoaded = false;
-  csvTimeOffset = 0;
-  csvOffsetInput.value = '0';
-  csvOffsetControl.style.display = 'none';
-  Plotly.restyle('plot-current', { visible: false }, [1]);
-  Plotly.restyle('plot-charge', { visible: false }, [1]);
+  csvLogs = [];
+  renderLogList();
+  if (isViewingMemory && curRows.length) renderMemory();
+  else renderWindow();
 });
 
-function parseCsvData(csvContent) {
+function parseCsvData(csvContent, name) {
   const lines = csvContent.trim().split('\n');
 
   // Full-resolution working arrays used only to build charge + decimate
@@ -1056,25 +1256,39 @@ function parseCsvData(csvContent) {
   // Decimate once at import; keeps shifted/plotting cheap.
   const cur = decimate(rawX, rawY, PLOT_MAX);
   const chr = decimate(rawX, rawQ, PLOT_MAX); // reuse time axis
-  csvX = cur.x; csvY = cur.y;
-  csvQX = chr.x; csvQY = chr.y;
 
-  csvTimeOffset = 0;
-  csvOffsetInput.value = '0';
-  csvOffsetControl.style.display = 'flex';
-  csvLoaded = true;
-  replotCsv();
+  csvLogs.push({
+    id: ++logIdSeq,
+    name,
+    // Index by the count *before* push so the first log gets color[0].
+    color: LOG_COLORS[csvLogs.length % LOG_COLORS.length],
+    x: cur.x, y: cur.y,
+    qx: chr.x, qy: chr.y,
+    tOffset: 0,
+    qOffset: 0
+  });
+
+  // Auto-align against live data on import where possible.
+  const log = csvLogs[csvLogs.length - 1];
+  if (liveX.length) fitLogToLive(log, true);
+
+  if (isViewingMemory && curRows.length) renderMemory();
+  else renderWindow();
 }
 
 /* -------------------- EXPORT -------------------- */
 
 exportCsvBtn.addEventListener('click', () => {
-  if (!curRows.length) return alert('No data');
+  if (!curRows.length) return alert('No Data');
   const header = 'time [s],current [µA]\n';
   const rows = [];
   for (let i = 0; i < curRows.length; i++) rows.push(`${curRows.t[i]},${curRows.i[i]}`);
   const body = rows.join('\n');
-  download(new Blob([header + body], { type: 'text/csv' }), 'metashunt.csv');
+
+  const defaultName = `metashunt_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`;
+  const chosen = prompt('Name for Exported Log:', defaultName);
+  const fileName = (chosen && chosen.trim()) ? chosen.trim() : defaultName;
+  download(new Blob([header + body], { type: 'text/csv' }), `${fileName}.csv`);
 });
 
 exportImgsBtn.addEventListener('click', async () => {
@@ -1098,14 +1312,14 @@ function setStatus(s) {
   statusEl.classList.remove('ready', 'connecting', 'running', 'error');
 
   if (s.startsWith('Connected')) {
-    deviceInfoEl.textContent = 'MetaShunt V2 connected';
+    deviceInfoEl.textContent = 'MetaShunt V2 Connected';
   }
 
   if (s.startsWith('Running')) {
     statusEl.classList.add('running');
-  } else if (s.startsWith('Burst complete')) {
+  } else if (s.startsWith('Burst Complete')) {
     statusEl.classList.add('connecting');
-  } else if (s.startsWith('Connected') || s.startsWith('Found') || s.startsWith('Burst requested') || s.startsWith('Continuous')) {
+  } else if (s.startsWith('Connected') || s.startsWith('Found') || s.startsWith('Burst Requested') || s.startsWith('Continuous')) {
     statusEl.classList.add('connecting');
   } else if (s.startsWith('Error')) {
     statusEl.classList.add('error');
@@ -1114,7 +1328,7 @@ function setStatus(s) {
   }
 
   if (s === 'Stopped') {
-    deviceInfoEl.textContent = 'Not connected';
+    deviceInfoEl.textContent = 'Not Connected';
     statusEl.classList.add('ready');
   }
 }
@@ -1216,19 +1430,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   setUiRunning(false);
 
-  function applyOffset(delta) {
-    csvTimeOffset = parseFloat(csvOffsetInput.value) + delta;
-    csvOffsetInput.value = csvTimeOffset.toFixed(1);
-    replotCsv();
-  }
-
-  csvOffsetInput.addEventListener('change', () => {
-    csvTimeOffset = parseFloat(csvOffsetInput.value) || 0;
-    replotCsv();
-  });
-  csvOffsetUp.addEventListener('click',   () => applyOffset(+parseFloat(csvOffsetInput.step)));
-  csvOffsetDown.addEventListener('click', () => applyOffset(-parseFloat(csvOffsetInput.step)));
-
   /* -------------------- INITIAL PLOTS -------------------- */
 
   const liveTrace = { x: [], y: [], mode: 'lines', name: 'Live Current' };
@@ -1275,7 +1476,7 @@ document.addEventListener('DOMContentLoaded', () => {
   Plotly.newPlot('plot-charge-dist', [{
     x: [], y: [], type: 'bar',
     marker: { color: '#14b8a6', line: { width: 0 } },
-    name: 'Charge share'
+    name: 'Charge Share'
   }], themedLayout({
     margin: { t: 16 },
     xaxis: { title: 'Current (µA)' },
@@ -1335,8 +1536,8 @@ document.addEventListener('DOMContentLoaded', () => {
       regionBounds = [null, null];
     }
     regionBtn.classList.toggle('active', enabled);
-    regionBtn.textContent = enabled ? 'Region: click 2 points' : 'Region Cursors';
-    regionStatsEl.textContent = enabled ? 'Click first boundary on the plot' : '';
+    regionBtn.textContent = enabled ? 'Region: Click 2 Points' : 'Region Cursors';
+    regionStatsEl.textContent = enabled ? 'Click First Boundary on the Plot' : '';
     refreshPlots();
   }
   regionBtn.addEventListener('click', () => setRegion(!regionActive));
@@ -1414,7 +1615,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (pendingRegion === 1 && x !== null) {
         regionBounds = [x, null];
         pendingRegion = 2;
-        regionStatsEl.textContent = 'Now click the end boundary on the plot';
+        regionStatsEl.textContent = 'Now Click the End Boundary on the Plot';
         refreshPlots();
       } else if (pendingRegion === 2 && x !== null) {
         regionBounds = [Math.min(regionBounds[0], x), Math.max(regionBounds[0], x)];
@@ -1434,9 +1635,9 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   setRegionLabelBtn.addEventListener('click', () => {
-    if (!regionActive) return alert('Enable Region Cursors first, then Set Region Caption');
+    if (!regionActive) return alert('Enable Region Cursors First, Then Set Region Caption');
     // Prompt modestly for the caption.
-    regionLabel = prompt('Region caption:', regionLabel || '');
+    regionLabel = prompt('Region Caption:', regionLabel || '');
     if (regionLabel === null) regionLabel = '';
     refreshPlots();
   });
@@ -1458,7 +1659,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (liveX.length) needsUpdate = true;
       return;
     }
-    if (!curRows.length) return alert('No data in memory');
+    if (!curRows.length) return alert('No Data in Memory');
 
     isViewingMemory = true;   // Lock so the flush loop doesn't overwrite this view
     plotMemoryBtn.textContent = 'Exit Dataset View';
