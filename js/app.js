@@ -41,6 +41,8 @@ const WINDOW_S = 10;         // sliding window length (seconds)
 const MAX_MEMORY = 2000000;  // cap for retained history records
 const PLOT_MAX = 60000;      // max points rendered per plot per trace
 
+let isRunningAtModule = false; // module-level mirror for module-scope fns
+
 let needsUpdate = false;
 let isViewingMemory = false; // Lock to prevent live data from overwriting memory plots
 let tick = 0;
@@ -196,13 +198,18 @@ function modelChargeTraces() {
 function generateModel() {
   if (!deviceModel) return;
   modelSim = simulateModel(deviceModel);
-  // Update status line
   const st = document.getElementById('modelStatus');
   if (st) {
     const n = modelSim.time.length;
     const dur = modelSim.time.length ? modelSim.time[modelSim.time.length - 1].toFixed(1) : 0;
     st.textContent = `Generated ${n} pts over ${dur} s (dashed purple).`;
   }
+  // B5: zoom-to-fit the model window so the dashed overlay is visible.
+  // Only when not actively streaming (live runs should keep their window).
+  if (!isRunningAtModule && modelSim.time.length) {
+    setVisibleRange([0, modelSim.time[modelSim.time.length - 1]]);
+  }
+  if (typeof updateDataUiState === 'function') updateDataUiState();
   replotCsv();
 }
 
@@ -458,7 +465,7 @@ function renderModelForm() {
 
   regGrid.append(
     mdlField('Name', mdlInput('text', reg.name, v => { reg.name = v; })),
-    mdlField('Output Voltage (V)', mdlNum(reg.output_voltage, 0, v => { reg.output_voltage = Math.max(0, v || 0); })),
+    mdlField('Output Voltage (V)', mdlNum(reg.output_voltage, 0.001, v => { reg.output_voltage = Math.max(0.001, v || 0.001); })),
     mdlField('Type', typeSel),
     effField,
     qField
@@ -675,8 +682,6 @@ function fitLogToLive(log, silent = false) {
   }
 }
 
-renderLogList();
-
 /* -------------------- ANALYSIS HELPERS -------------------- */
 
 // Basic descriptive stats over (xs, ys)
@@ -796,7 +801,8 @@ function renderHistogram() {
   }], themedLayout({
     margin: { t: 16 },
     xaxis: { title: 'Current (µA)' },
-    yaxis: { title: 'Samples' }
+    // Log scale so low-occupancy bins remain visible when a single bin dominates.
+    yaxis: { title: 'Samples', type: 'log' }
   }));
 }
 
@@ -1211,6 +1217,19 @@ function updateDecimStats() {
 }
 
 // Update the subtitle that clarifies which data scope each analysis chart uses.
+function updateDataUiState() {
+  const hasData = curRows.length > 0;
+  const buttons = {
+    exportCsvBtn: 'No data recorded to export',
+    exportImgsBtn: hasData ? '' : 'No data to plot',
+    plotMemoryBtn: hasData ? '' : 'No data in memory'
+  };
+  for (const [id, title] of Object.entries(buttons)) {
+    const btn = document.getElementById(id);
+    if (btn) { btn.disabled = !hasData; btn.title = title || ''; }
+  }
+}
+
 function updateDataSourceHint() {
   let scope;
   if (visibleRange) {
@@ -1539,6 +1558,7 @@ function handleMeasurement(batch) {
   }
 
   needsUpdate = true;
+  updateDataUiState();
 }
 
 function resetData() {
@@ -1564,6 +1584,7 @@ function resetData() {
   if (regionStatsEl) regionStatsEl.textContent = '';
 
   updateDecimStats();
+  updateDataUiState();
   resetPlots();
 }
 
@@ -1648,10 +1669,30 @@ exportCsvBtn.addEventListener('click', () => {
 });
 
 exportImgsBtn.addEventListener('click', async () => {
-  const cur = document.getElementById('plot-current');
-  const chg = document.getElementById('plot-charge');
-  download(await Plotly.toImage(cur, { format: 'png' }), 'current.png');
-  download(await Plotly.toImage(chg, { format: 'png' }), 'charge.png');
+  // Export every plot that currently holds real data. The Spectrum plot may be
+  // the "FFT unavailable for decimated data" placeholder (no real trace), so we
+  // verify it has an actual trace with points before exporting it.
+  const specs = [
+    { id: 'plot-current', fn: 'current' },
+    { id: 'plot-charge', fn: 'charge' },
+    { id: 'plot-cq', fn: 'occupancy' },
+    { id: 'plot-hist', fn: 'distribution' },
+    { id: 'plot-fft', fn: 'spectrum', needTrace: true },
+    { id: 'plot-charge-dist', fn: 'charge-share' }
+  ];
+  for (const s of specs) {
+    const gd = document.getElementById(s.id);
+    if (!gd) continue;
+    if (s.needTrace) {
+      const traces = (gd.data || []).filter(t => t.visible !== false && Array.isArray(t.x) && t.x.length > 0);
+      if (!traces.length) continue; // skip the invalid/placeholder Spectrum
+    }
+    try {
+      download(await Plotly.toImage(gd, { format: 'png' }), `${s.fn}.png`);
+    } catch (e) {
+      console.warn(`Could not export ${s.fn}:`, e);
+    }
+  }
 });
 
 function download(blobOrUrl, name) {
@@ -1840,12 +1881,27 @@ document.addEventListener('DOMContentLoaded', () => {
     collapseLabelsBtn.textContent = open ? 'Labels ▴' : 'Labels ▾';
   });
 
+  // Generic section collapsibles (Data & Analysis, Device Model).
+  document.querySelectorAll('.ctrl-collapse[data-target]').forEach(btn => {
+    const bodyId = btn.dataset.target;
+    const sect = bodyId ? document.getElementById(bodyId)?.closest('.ctrl-section') : null;
+    if (!bodyId || !sect) return;
+    const base = btn.textContent.replace(/[\s▾▴▸]+$/g, '').trim();
+    const toggle = () => {
+      const collapsed = sect.classList.toggle('collapsed');
+      sect.classList.toggle('expanded', !collapsed);
+      btn.textContent = `${base} ${collapsed ? '▸' : '▾'}`;
+    };
+    btn.addEventListener('click', toggle);
+  });
+
   let uiRunning = false;
   let demoActive = false;
   let demoWorker = null;
 
   function setUiRunning(running) {
     uiRunning = running;
+    isRunningAtModule = running;
     startBtn.disabled = running;
     startDemoBtn.disabled = running;
     stopBtn.disabled = !running;
@@ -2055,6 +2111,42 @@ document.addEventListener('DOMContentLoaded', () => {
     scheduleAnalysis();
   });
 
+  /* -------------------- HOVER READOUT (B4) -------------------- */
+
+  const hoverReadout = document.getElementById('hoverReadout');
+
+  function hoverStatsFor(ys) {
+    return basicStats(ys);
+  }
+
+  function updateHoverReadout(ptX, ptY, kind) {
+    if (!hoverReadout) return;
+    // Snapshot of the hovered point plus min/max/avg over the live window.
+    let html = '';
+    if (ptX !== null && ptX !== undefined) html += `t=<b>${Number(ptX).toFixed(3)}s</b> `;
+    if (ptY !== null && ptY !== undefined) html += ` <b>${formatCurrent(ptY)}</b>`;
+    const s = hoverStatsFor(liveY);
+    if (s) {
+      html += ` &nbsp;·&nbsp; win avg=<b>${fmt(s.avg)}µA</b> min=<b>${fmt(s.min)}µA</b> max=<b>${fmt(s.max)}µA</b>`;
+    }
+    hoverReadout.innerHTML = html || '';
+    hoverReadout.style.display = html ? '' : 'none';
+  }
+
+  function onPlotHover(e) {
+    const pt = e.points && e.points[0];
+    if (!pt) return;
+    updateHoverReadout(pt.x, pt.y, pt.fullData && pt.fullData.name);
+  }
+  function onPlotUnhover() {
+    if (hoverReadout) hoverReadout.style.display = 'none';
+  }
+
+  document.getElementById('plot-current').on('plotly_hover', onPlotHover);
+  document.getElementById('plot-current').on('plotly_unhover', onPlotUnhover);
+  document.getElementById('plot-charge').on('plotly_hover', onPlotHover);
+  document.getElementById('plot-charge').on('plotly_unhover', onPlotUnhover);
+
   // Label flow: click the plot (when region inactive) opens an inline label
   // popover at the anchor, instead of a dislocated top-panel input.
   document.getElementById('plot-current').on('plotly_click', (e) => {
@@ -2140,4 +2232,6 @@ document.addEventListener('DOMContentLoaded', () => {
   triggerSel.addEventListener('change', onTriggerChange);
 
   onTriggerChange();
+  renderLogList();
+  updateDataUiState();
 });

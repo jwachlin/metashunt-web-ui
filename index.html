@@ -80,22 +80,24 @@
 
   <section class="controls">
 
-    <div class="ctrl-section">
-      <h4 class="ctrl-title">Data &amp; Analysis</h4>
-      <div class="row">
-        <div class="field">
-          <label>Device</label>
-          <div id="deviceInfo" class="device-info">Not Connected</div>
+    <div class="ctrl-section" data-collapse-target="dataBody">
+      <button class="ghost collapse-btn ctrl-collapse" data-target="dataBody">Data &amp; Analysis ▾</button>
+      <div id="dataBody">
+        <div class="row">
+          <div class="field">
+            <label>Device</label>
+            <div id="deviceInfo" class="device-info">Not Connected</div>
+          </div>
+          <div class="field">
+            <label>Battery Capacity (mAh)</label>
+            <input type="number" id="batteryMah" step="10" value="0"/>
+          </div>
+          <div class="spacer"></div>
+          <button id="loadCsvBtn" class="ghost">Import Log</button>
+          <button id="plotMemoryBtn" class="ghost">View Entire Dataset</button>
+          <button id="exportCsvBtn" class="ghost">Export CSV</button>
+          <button id="exportImgsBtn" class="ghost">Export PNGs</button>
         </div>
-        <div class="field">
-          <label>Battery Capacity (mAh)</label>
-          <input type="number" id="batteryMah" step="10" value="0"/>
-        </div>
-        <div class="spacer"></div>
-        <button id="loadCsvBtn" class="ghost">Import Log</button>
-        <button id="plotMemoryBtn" class="ghost">View Entire Dataset</button>
-        <button id="exportCsvBtn" class="ghost">Export CSV</button>
-        <button id="exportImgsBtn" class="ghost">Export PNGs</button>
       </div>
     </div>
 
@@ -115,20 +117,25 @@
       </div>
     </div>
 
-    <div class="ctrl-section">
-      <h4 class="ctrl-title">Device Model</h4>
-      <div class="row" id="modelPlaceholder">
-        <button id="addModelBtn" class="ghost">Add Device Model</button>
-        <button id="loadModelBtn" class="ghost">Load Device Model</button>
+    <div class="ctrl-section" data-collapse-target="modelBody">
+      <div class="row">
+        <button class="ghost collapse-btn ctrl-collapse" data-target="modelBody">Device Model ▾</button>
         <div class="spacer"></div>
       </div>
-      <div id="modelArea" style="display:none">
-        <div id="modelStatus" class="model-status"></div>
-        <div id="modelForm"></div>
-        <div class="row" style="margin-top:10px;">
-          <button id="generateModelBtn" class="primary small">Generate Model</button>
-          <button id="exportModelBtn" class="export small">Export Model</button>
-          <button id="clearModelBtn" class="danger small">Remove Model</button>
+      <div id="modelBody">
+        <div id="modelArea" style="display:none">
+          <div id="modelStatus" class="model-status"></div>
+          <div id="modelForm"></div>
+          <div class="row" style="margin-top:10px;">
+            <button id="generateModelBtn" class="primary small">Generate Model</button>
+            <button id="exportModelBtn" class="export small">Export Model</button>
+            <button id="clearModelBtn" class="danger small">Remove Model</button>
+          </div>
+        </div>
+        <div class="row" id="modelPlaceholder">
+          <button id="addModelBtn" class="ghost">Add Device Model</button>
+          <button id="loadModelBtn" class="ghost">Load Device Model</button>
+          <div class="spacer"></div>
         </div>
       </div>
     </div>
@@ -154,6 +161,7 @@
   </section>
 
   <main class="plots">
+    <div id="hoverReadout" class="hover-readout" style="display:none"></div>
     <div class="card">
       <div class="card-head">
         <h3>Current vs Time</h3>
